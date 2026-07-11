@@ -15,38 +15,62 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y git build-essential fakeroot clang llvm
+        sudo apt-get install -y git build-essential fakeroot clang llvm wget curl
 
     - name: Setup Theos
       run: |
         git clone --depth 1 https://github.com/theos/theos.git ~/theos
+        mkdir -p ~/theos/sdks
         echo "$HOME/theos/bin" >> $GITHUB_PATH
         echo "THEOS=$HOME/theos" >> $GITHUB_ENV
 
-    - name: Fix Makefile placeholders
+    - name: Download SDK
+      run: |
+        cd ~/theos/sdks
+        echo "Downloading iOS SDK..."
+        wget -q https://github.com/theos/sdks/releases/download/latest/iPhoneOS14.5.sdk.tar.gz -O sdk.tar.gz 2>/dev/null || \
+        wget -q https://github.com/theos/sdks/releases/download/latest/iPhoneOS.sdk.tar.gz -O sdk.tar.gz 2>/dev/null || true
+        
+        if [ -f sdk.tar.gz ]; then
+          tar xzf sdk.tar.gz
+          rm sdk.tar.gz
+          ls -la
+        fi
+
+    - name: Fix Makefile
       run: |
         cd template
         sed -i 's/@@PROJECTNAME@@/ModMenu/g' Makefile
         sed -i 's/@@BINARYNAME@@/ModMenu/g' Makefile
+        grep "TWEAK_NAME\|FILES" Makefile | head -5
 
     - name: Build
       run: |
         export THEOS=$HOME/theos
         export PATH=$THEOS/bin:$PATH
         cd template
-        make clean || true
-        make package || true
+        echo "=== THEOS: $THEOS ==="
+        echo "=== Checking files ==="
+        ls -la
+        make --version
+        echo "=== Building ==="
+        make package 2>&1 | tee build.log
+        echo "=== Build finished ==="
 
-    - name: Check results
+    - name: List outputs
       if: always()
       run: |
-        find template -name "*.deb" -o -name "*.dylib" 2>/dev/null
-        ls -la template/ 2>/dev/null || true
+        echo "=== Searching for artifacts ==="
+        find template -type f \( -name "*.deb" -o -name "*.dylib" \) 2>/dev/null | head -20
+        echo "=== Template contents ==="
+        ls -lah template/ 2>/dev/null
 
-    - name: Upload artifacts
+    - name: Upload everything
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: build-output
-        path: template/
-        if-no-files-found: ignore
+        name: build-artifacts
+        path: |
+          template/
+          build.log
+        retention-days: 7
