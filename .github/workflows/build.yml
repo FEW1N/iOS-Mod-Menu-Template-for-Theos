@@ -34,9 +34,9 @@ jobs:
           Package: com.few1n.dreamroadmod
           Name: FEW1N Mod Menu
           Depends: mobilesubstrate
-          Version: 9.0
+          Version: 10.0
           Architecture: iphoneos-arm
-          Description: Ultimate Modern FEW1N Mod Menu with Room Password Bypass
+          Description: Ultimate Modern FEW1N Mod Menu Fixed RVAs
           Maintainer: few1n
           Author: few1n
           Section: Tweaks
@@ -108,7 +108,6 @@ jobs:
           }
           
           // Function Pointers
-          void (*SetTimeScale)(float value, void* method);
           struct Vector3 (*get_position)(void* instance, void* method);
           void (*set_position)(void* instance, struct Vector3 value, void* method);
           struct Vector3 (*get_linearVelocity)(void* instance, void* method);
@@ -135,6 +134,15 @@ jobs:
                   return il2cpp_string_new(nsStr.UTF8String);
               }
               return NULL;
+          }
+
+          // TIME SCALE GET HOOK (Hiz Ayari)
+          float (*old_get_timeScale)(void* method);
+          float hooked_get_timeScale(void* method) {
+              if (speedMode == 2) return 2.5f;
+              if (speedMode == 5) return 5.0f;
+              if (speedMode == 10) return 10.0f;
+              return old_get_timeScale(method);
           }
 
           // MOVE HOOK (Fizikler)
@@ -182,17 +190,16 @@ jobs:
               }
           }
 
-          // PLAKA HOOK
-          void (*old_PlateApply)(void* instance, void* countryStr, void* textStr, void* method);
-          void hooked_PlateApply(void* instance, void* countryStr, void* textStr, void* method) {
+          // PLAKA ÜRETİCİ HOOK
+          void* (*old_PlateGenerate)(void* countryStr, void* method);
+          void* hooked_PlateGenerate(void* countryStr, void* method) {
               if (isCustomPlateEnabled && customPlateText[0] != '\0') {
                   void* customStr = toIl2CppString([NSString stringWithUTF8String:customPlateText]);
                   if (customStr) {
-                      old_PlateApply(instance, countryStr, customStr, method);
-                      return;
+                      return customStr;
                   }
               }
-              old_PlateApply(instance, countryStr, textStr, method);
+              return old_PlateGenerate(countryStr, method);
           }
 
           // CHAT SEND HOOK
@@ -216,8 +223,6 @@ jobs:
           void (*old_RoomConnect)(void* instance, void* method);
           void hooked_RoomConnect(void* instance, void* method) {
               if (isBypassPasswordEnabled) {
-                  // HR_UI_RoomListLine icindeki 0x50 ofsetindeki 'password' stringini NULL yapıyoruz.
-                  // Boylece oyun odanin sifresiz oldugunu dusunup direkt JoinRoom cagiriyor!
                   *(void**)((char*)instance + 0x50) = NULL;
               }
               old_RoomConnect(instance, method);
@@ -290,7 +295,6 @@ jobs:
               [self.floatingBtn addGestureRecognizer:panBtn];
               [window addSubview:self.floatingBtn];
 
-              // Panel Boyutu Yeni Ozellikler Icin Artirildi (Height: 570)
               self.mainPanel = [[FEW1NModMenu alloc] initWithFrame:CGRectMake(0, 0, 320, 580)];
               self.mainPanel.center = window.center;
               self.mainPanel.backgroundColor = [UIColor colorWithRed:0.05 green:0.05 blue:0.05 alpha:0.95];
@@ -358,17 +362,17 @@ jobs:
               [self.mainPanel addSubview:btnSave];
               [self.mainPanel addSubview:btnTeleport];
 
-              // CHAT RENKLENDIRICI VE SPAMMER BUTONLARI (Y: 425)
+              // CHAT RENKLENDIRICI VE SPAMMER BUTONLARI
               self.btnColorChat = [self createToggleBtn:@"🎨 Renkli Chat" frame:CGRectMake(10, 425, 145, 40) action:@selector(toggleColorChat)];
               self.btnChatSpam = [self createToggleBtn:@"📢 Chat Spam" frame:CGRectMake(165, 425, 145, 40) action:@selector(toggleChatSpam)];
               [self.mainPanel addSubview:self.btnColorChat];
               [self.mainPanel addSubview:self.btnChatSpam];
 
-              // ODA SIFRE KIRICI (Y: 475 - Tam Genislik)
+              // ODA SIFRE KIRICI
               self.btnBypassPassword = [self createToggleBtn:@"🔑 Oda Şifre Kırıcı (Bypass)" frame:CGRectMake(10, 475, 300, 40) action:@selector(toggleBypassPassword)];
               [self.mainPanel addSubview:self.btnBypassPassword];
 
-              // SPAM METNI VE PLAKA METNI (Y: 525)
+              // SPAM METNI VE PLAKA METNI
               self.btnCustomSpam = [self createBtn:@"💬 Spam Yazısı" frame:CGRectMake(10, 525, 145, 40) action:@selector(setCustomSpam)];
               self.btnCustomPlate = [self createBtn:@"📝 Plaka Yazısı" frame:CGRectMake(165, 525, 145, 40) action:@selector(setCustomPlate)];
               self.btnCustomSpam.backgroundColor = [UIColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:1.0];
@@ -415,10 +419,10 @@ jobs:
               self.mainPanel.hidden = !self.mainPanel.hidden;
           }
 
-          - (void)setSpeed1 { speedMode = 1; if (SetTimeScale) SetTimeScale(1.0f, NULL); [self updateUIColors]; }
-          - (void)setSpeed25 { speedMode = 2; if (SetTimeScale) SetTimeScale(2.5f, NULL); [self updateUIColors]; }
-          - (void)setSpeed5 { speedMode = 5; if (SetTimeScale) SetTimeScale(5.0f, NULL); [self updateUIColors]; }
-          - (void)setSpeed10 { speedMode = 10; if (SetTimeScale) SetTimeScale(10.0f, NULL); [self updateUIColors]; }
+          - (void)setSpeed1 { speedMode = 1; [self updateUIColors]; }
+          - (void)setSpeed25 { speedMode = 2; [self updateUIColors]; }
+          - (void)setSpeed5 { speedMode = 5; [self updateUIColors]; }
+          - (void)setSpeed10 { speedMode = 10; [self updateUIColors]; }
 
           - (void)toggleGodzilla { sizeMode = (sizeMode == 1) ? 0 : 1; [self updateUIColors]; }
           - (void)toggleGhost { sizeMode = (sizeMode == 2) ? 0 : 2; [self updateUIColors]; }
@@ -562,24 +566,27 @@ jobs:
                   
                   uintptr_t baseAddr = GetUnityFrameworkBase();
                   if (baseAddr != 0) {
-                      SetTimeScale = (void (*)(float, void*))(baseAddr + 0x67523F8);
+                      // TIME GET HOOK (Hiz hilesi icin gerekli)
+                      MSHookFunction((void *)(baseAddr + 0x67523F8), (void *)hooked_get_timeScale, (void **)&old_get_timeScale);
+
                       get_position = (struct Vector3 (*)(void*, void*))(baseAddr + 0x6819010);
                       set_position = (void (*)(void*, struct Vector3, void*))(baseAddr + 0x6819124);
                       get_linearVelocity = (struct Vector3 (*)(void*, void*))(baseAddr + 0x6817D68);
                       set_linearVelocity = (void (*)(void*, struct Vector3, void*))(baseAddr + 0x6817E7C);
                       
                       get_transform = (void* (*)(void*, void*))(baseAddr + 0x673C9DC);
-                      set_localScale = (void (*)(void*, struct Vector3, void*))(baseAddr + 0x6757F98);
-                      set_mass = (void (*)(void*, float, void*))(baseAddr + 0x681869C);
+                      set_localScale = (void (*)(void*, struct Vector3, void*))(baseAddr + 0x6757064); // Düzeltilen RVA
+                      set_mass = (void (*)(void*, float, void*))(baseAddr + 0x68187B4); // Düzeltilen RVA
                       
                       ChatManager_get_Instance = (void* (*)(void*))(baseAddr + 0x319D630);
                       ChatManager_Send = (void (*)(void*, void*, void*))(baseAddr + 0x319D734);
                       
                       MSHookFunction((void *)(baseAddr + 0x54B0B24), (void *)hooked_Move, (void **)&old_Move);
-                      MSHookFunction((void *)(baseAddr + 0x5F7B9BC), (void *)hooked_PlateApply, (void **)&old_PlateApply);
-                      MSHookFunction((void *)(baseAddr + 0x319D734), (void *)hooked_ChatSend, (void **)&old_ChatSend);
                       
-                      // ODA SIFRE BYPASS HOOK
+                      // PLAKA ÜRETİCİ HOOK (PlateGenerators.Generate) - Kesin plaka cozumu
+                      MSHookFunction((void *)(baseAddr + 0x5A12550), (void *)hooked_PlateGenerate, (void **)&old_PlateGenerate);
+                      
+                      MSHookFunction((void *)(baseAddr + 0x319D734), (void *)hooked_ChatSend, (void **)&old_ChatSend);
                       MSHookFunction((void *)(baseAddr + 0x5497790), (void *)hooked_RoomConnect, (void **)&old_RoomConnect);
                   }
               });
