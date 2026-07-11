@@ -1,0 +1,48 @@
+name: Build dylib and deb
+
+on:
+  push:
+    branches: [ master, main, add-build-workflow ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: theos/theos:latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Theos environment
+      run: |
+        export THEOS=/theos
+        export PATH=$THEOS/bin:$PATH
+        echo "THEOS=$THEOS" >> $GITHUB_ENV
+        echo "$THEOS/bin" >> $GITHUB_PATH
+
+    - name: Build dylib and deb package
+      run: |
+        cd template
+        make clean
+        make package
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: build-artifacts
+        path: |
+          template/.theos/obj/
+          template/packages/
+        retention-days: 30
+
+    - name: Create Release (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: template/packages/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
