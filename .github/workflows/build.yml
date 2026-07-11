@@ -30,12 +30,12 @@ jobs:
 
       - name: Create Tweak Files
         run: |
-          # 1. Control Dosyası (Paket Bilgileri)
+          # 1. Control Dosyası
           cat << 'EOF' > control
           Package: com.ilbas.dreamroadmod
           Name: DreamRoadMod
           Depends: mobilesubstrate
-          Version: 1.0
+          Version: 3.0
           Architecture: iphoneos-arm
           Description: Dream Road Hile Menusu
           Maintainer: ilbas
@@ -43,7 +43,7 @@ jobs:
           Section: Tweaks
           EOF
 
-          # 2. Makefile (Derleme Ayarları)
+          # 2. Makefile
           cat << 'EOF' > Makefile
           TARGET := iphone:clang:latest:14.0
           ARCHS = arm64
@@ -60,23 +60,27 @@ jobs:
           include $(THEOS_MAKE_PATH)/tweak.mk
           EOF
 
-          # 3. Plist Dosyası (Hangi oyunda çalışacak)
+          # 3. Plist Dosyası
           cat << 'EOF' > DreamRoadMod.plist
           { Filter = { Bundles = ( "com.TenebryFox.DreamRoadMultiplayer" ); }; }
           EOF
 
-          # 4. Tweak.xm (Hile Kodlarımız)
+          # 4. Tweak.xm (Hile ve MENÜ Kodlarımız)
           cat << 'EOF' > Tweak.xm
           #import <Foundation/Foundation.h>
           #import <UIKit/UIKit.h>
           #include <substrate.h>
           #include <mach-o/dyld.h>
-          #include <string.h> // strstr icin gerekli
+          #include <string.h>
 
-          bool isSpeedHackEnabled = true;
-          float speedMultiplier = 5.0f;
-          bool isFlyingCarEnabled = true;
+          bool isSpeedHackEnabled = false;
+          float speedMultiplier = 1.0f;
+          
+          bool isFlyingCarEnabled = false;
           float jumpForce = 50000.0f;
+          
+          bool isHoverEnabled = false;
+          float hoverHeight = 10.0f;
 
           uintptr_t GetUnityFrameworkBase() {
               for (uint32_t i = 0; i < _dyld_image_count(); i++) {
@@ -88,14 +92,14 @@ jobs:
               return 0;
           }
 
-          struct Vector3 {
-              float x;
-              float y;
-              float z;
-          };
-
+          struct Vector3 { float x; float y; float z; };
+          
           void (*old_set_timeScale)(float value);
           void (*old_AddForce)(void* instance, struct Vector3 force, int mode);
+          
+          // Hover için oyunun kendi pozisyon fonksiyonlarını kullanacağız
+          struct Vector3 (*get_position)(void* instance);
+          void (*set_position)(void* instance, struct Vector3 value);
 
           void hooked_set_timeScale(float value) {
               if (isSpeedHackEnabled) {
@@ -106,16 +110,119 @@ jobs:
           }
 
           void hooked_AddForce(void* instance, struct Vector3 force, int mode) {
-              if (isFlyingCarEnabled) {
+              if (isHoverEnabled && get_position && set_position) {
+                  // Araba havada asılı kalsın (Y koordinatını sabitliyoruz)
+                  struct Vector3 pos = get_position(instance);
+                  pos.y = hoverHeight;
+                  set_position(instance, pos);
+                  force.y = 0.0f; // Aşağı/yukarı düşmeyi engelle
+              } else if (isFlyingCarEnabled) {
                   force.y += jumpForce;
               }
               old_AddForce(instance, force, mode);
           }
 
+          // --- UI (MENÜ) KODLARI ---
+          @interface ModMenuManager : NSObject
+          + (instancetype)sharedManager;
+          - (void)setupMenu;
+          @end
+
+          @implementation ModMenuManager
+          + (instancetype)sharedManager {
+              static ModMenuManager *sharedManager = nil;
+              static dispatch_once_t onceToken;
+              dispatch_once(&onceToken, ^{
+                  sharedManager = [[self alloc] init];
+              });
+              return sharedManager;
+          }
+
+          - (void)setupMenu {
+              UIWindow *window = [UIApplication sharedApplication].keyWindow;
+              if (!window) return;
+
+              UIButton *menuBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+              menuBtn.frame = CGRectMake(20, 50, 60, 60);
+              menuBtn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.8];
+              menuBtn.layer.cornerRadius = 30;
+              menuBtn.clipsToBounds = YES;
+              [menuBtn setTitle:@"⚙️" forState:UIControlStateNormal];
+              menuBtn.titleLabel.font = [UIFont systemFontOfSize:30];
+              [menuBtn addTarget:self action:@selector(openMenu) forControlEvents:UIControlEventTouchUpInside];
+              
+              UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragButton:)];
+              [menuBtn addGestureRecognizer:pan];
+              
+              [window addSubview:menuBtn];
+          }
+
+          - (void)dragButton:(UIPanGestureRecognizer *)pan {
+              UIView *button = pan.view;
+              CGPoint translation = [pan translationInView:button.superview];
+              button.center = CGPointMake(button.center.x + translation.x, button.center.y + translation.y);
+              [pan setTranslation:CGPointZero inView:button.superview];
+          }
+
+          - (void)openMenu {
+              UIWindow *window = [UIApplication sharedApplication].keyWindow;
+              UIViewController *rootVC = window.rootViewController;
+
+              UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🚀 Dream Road Mod" message:@"Hız ve Uçuş Ayarları" preferredStyle:UIAlertControllerStyleActionSheet];
+
+              [alert addAction:[UIAlertAction actionWithTitle:@"Normal Hız (1x)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                  isSpeedHackEnabled = false;
+                  speedMultiplier = 1.0f;
+              }]];
+              
+              [alert addAction:[UIAlertAction actionWithTitle:@"Süper Hız (5x)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                  isSpeedHackEnabled = true;
+                  speedMultiplier = 5.0f;
+              }]];
+
+              NSString *flyTitle = isFlyingCarEnabled ? @"🛸 Uçan Araba: KAPAT" : @"🛸 Uçan Araba: AÇ";
+              [alert addAction:[UIAlertAction actionWithTitle:flyTitle style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+                  isFlyingCarEnabled = !isFlyingCarEnabled;
+                  isHoverEnabled = false; // İkisi aynı anda olmasın
+              }]];
+              
+              NSString *hoverTitle = isHoverEnabled ? @"🚁 Havada Asılı Kal (Hover): KAPAT" : @"🚁 Havada Asılı Kal (Hover): AÇ";
+              [alert addAction:[UIAlertAction actionWithTitle:hoverTitle style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+                  isHoverEnabled = !isHoverEnabled;
+                  isFlyingCarEnabled = false; // İkisi aynı anda olmasın
+              }]];
+              
+              [alert addAction:[UIAlertAction actionWithTitle:@"⬆️ Hover Yüksekliğini Artır (+5m)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                  hoverHeight += 5.0f;
+              }]];
+              
+              [alert addAction:[UIAlertAction actionWithTitle:@"⬇️ Hover Yüksekliğini Azalt (-5m)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                  hoverHeight -= 5.0f;
+              }]];
+
+              [alert addAction:[UIAlertAction actionWithTitle:@"Menüyü Kapat" style:UIAlertActionStyleCancel handler:nil]];
+
+              if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+                  alert.popoverPresentationController.sourceView = window;
+                  alert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(window.bounds), CGRectGetMidY(window.bounds), 0, 0);
+                  alert.popoverPresentationController.permittedArrowDirections = 0;
+              }
+
+              [rootVC presentViewController:alert animated:YES completion:nil];
+          }
+          @end
+
           %ctor {
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                  
+                  [[ModMenuManager sharedManager] setupMenu];
+                  
                   uintptr_t baseAddr = GetUnityFrameworkBase();
                   if (baseAddr != 0) {
+                      // Orijinal fonksiyonların bellek adreslerini kaydet
+                      get_position = (struct Vector3 (*)(void*))(baseAddr + 0x6819010);
+                      set_position = (void (*)(void*, struct Vector3))(baseAddr + 0x6819124);
+                      
                       MSHookFunction((void *)(baseAddr + 0x67523F8), (void *)hooked_set_timeScale, (void **)&old_set_timeScale);
                       MSHookFunction((void *)(baseAddr + 0x6819C80), (void *)hooked_AddForce, (void **)&old_AddForce);
                   }
