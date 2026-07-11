@@ -30,20 +30,20 @@ jobs:
 
       - name: Create Tweak Files
         run: |
-          # 1. Control Dosyası
+          # 1. Control Dosyası (Paket Bilgileri)
           cat << 'EOF' > control
           Package: com.ilbas.dreamroadmod
           Name: DreamRoadMod
           Depends: mobilesubstrate
-          Version: 3.0
+          Version: 4.0
           Architecture: iphoneos-arm
-          Description: Dream Road Hile Menusu
+          Description: Dream Road Hile Menusu (Aktif Cagirili)
           Maintainer: ilbas
           Author: ilbas
           Section: Tweaks
           EOF
 
-          # 2. Makefile
+          # 2. Makefile (Derleme Ayarları)
           cat << 'EOF' > Makefile
           TARGET := iphone:clang:latest:14.0
           ARCHS = arm64
@@ -73,11 +73,8 @@ jobs:
           #include <mach-o/dyld.h>
           #include <string.h>
 
-          bool isSpeedHackEnabled = false;
-          float speedMultiplier = 1.0f;
-          
           bool isFlyingCarEnabled = false;
-          float jumpForce = 50000.0f;
+          float jumpForce = 5000.0f;
           
           bool isHoverEnabled = false;
           float hoverHeight = 10.0f;
@@ -94,35 +91,31 @@ jobs:
 
           struct Vector3 { float x; float y; float z; };
           
-          void (*old_set_timeScale)(float value);
-          void (*old_AddForce)(void* instance, struct Vector3 force, int mode);
-          
-          // Hover için oyunun kendi pozisyon fonksiyonlarını kullanacağız
+          void (*SetTimeScale)(float value);
+          void (*AddForce)(void* instance, struct Vector3 force, int mode);
           struct Vector3 (*get_position)(void* instance);
           void (*set_position)(void* instance, struct Vector3 value);
 
-          void hooked_set_timeScale(float value) {
-              if (isSpeedHackEnabled) {
-                  old_set_timeScale(speedMultiplier);
-              } else {
-                  old_set_timeScale(value);
+          void (*old_Move)(void* instance, float steering, float accel, float footbrake, float handbrake);
+          
+          void hooked_Move(void* instance, float steering, float accel, float footbrake, float handbrake) {
+              // CarDriveSystem icindeki _rigidbody offseti 0x48 (dump.cs'den alindi)
+              void* rb = *(void**)((uint8_t*)instance + 0x48);
+              if (rb && get_position && set_position && AddForce) {
+                  if (isHoverEnabled) {
+                      struct Vector3 pos = get_position(rb);
+                      pos.y = hoverHeight;
+                      set_position(rb, pos);
+                  } 
+                  if (isFlyingCarEnabled && accel > 0.1f) {
+                      struct Vector3 force = {0, jumpForce, 0};
+                      AddForce(rb, force, 0); // 0 = ForceMode.Force
+                  }
               }
+              old_Move(instance, steering, accel, footbrake, handbrake);
           }
 
-          void hooked_AddForce(void* instance, struct Vector3 force, int mode) {
-              if (isHoverEnabled && get_position && set_position) {
-                  // Araba havada asılı kalsın (Y koordinatını sabitliyoruz)
-                  struct Vector3 pos = get_position(instance);
-                  pos.y = hoverHeight;
-                  set_position(instance, pos);
-                  force.y = 0.0f; // Aşağı/yukarı düşmeyi engelle
-              } else if (isFlyingCarEnabled) {
-                  force.y += jumpForce;
-              }
-              old_AddForce(instance, force, mode);
-          }
-
-          // --- UI (MENÜ) KODLARI ---
+          // --- UI (MENU) KODLARI ---
           @interface ModMenuManager : NSObject
           + (instancetype)sharedManager;
           - (void)setupMenu;
@@ -168,39 +161,45 @@ jobs:
               UIWindow *window = [UIApplication sharedApplication].keyWindow;
               UIViewController *rootVC = window.rootViewController;
 
-              UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🚀 Dream Road Mod" message:@"Hız ve Uçuş Ayarları" preferredStyle:UIAlertControllerStyleActionSheet];
+              UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🚀 Dream Road Mod" message:@"Hiz ve Ucus Ayarlari" preferredStyle:UIAlertControllerStyleActionSheet];
 
-              [alert addAction:[UIAlertAction actionWithTitle:@"Normal Hız (1x)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                  isSpeedHackEnabled = false;
-                  speedMultiplier = 1.0f;
+              [alert addAction:[UIAlertAction actionWithTitle:@"Normal Hiz (1x)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                  if (SetTimeScale) SetTimeScale(1.0f);
               }]];
               
-              [alert addAction:[UIAlertAction actionWithTitle:@"Süper Hız (5x)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                  isSpeedHackEnabled = true;
-                  speedMultiplier = 5.0f;
+              [alert addAction:[UIAlertAction actionWithTitle:@"Hizli (2x)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                  if (SetTimeScale) SetTimeScale(2.0f);
               }]];
 
-              NSString *flyTitle = isFlyingCarEnabled ? @"🛸 Uçan Araba: KAPAT" : @"🛸 Uçan Araba: AÇ";
+              [alert addAction:[UIAlertAction actionWithTitle:@"Super Hiz (5x)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                  if (SetTimeScale) SetTimeScale(5.0f);
+              }]];
+
+              [alert addAction:[UIAlertAction actionWithTitle:@"Isik Hizi (10x)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                  if (SetTimeScale) SetTimeScale(10.0f);
+              }]];
+
+              NSString *flyTitle = isFlyingCarEnabled ? @"🛸 Ucan Araba: KAPAT" : @"🛸 Ucan Araba: AC";
               [alert addAction:[UIAlertAction actionWithTitle:flyTitle style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
                   isFlyingCarEnabled = !isFlyingCarEnabled;
-                  isHoverEnabled = false; // İkisi aynı anda olmasın
+                  isHoverEnabled = false;
               }]];
               
-              NSString *hoverTitle = isHoverEnabled ? @"🚁 Havada Asılı Kal (Hover): KAPAT" : @"🚁 Havada Asılı Kal (Hover): AÇ";
+              NSString *hoverTitle = isHoverEnabled ? @"🚁 Havada Asili Kal (Hover): KAPAT" : @"🚁 Havada Asili Kal (Hover): AC";
               [alert addAction:[UIAlertAction actionWithTitle:hoverTitle style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
                   isHoverEnabled = !isHoverEnabled;
-                  isFlyingCarEnabled = false; // İkisi aynı anda olmasın
+                  isFlyingCarEnabled = false;
               }]];
               
-              [alert addAction:[UIAlertAction actionWithTitle:@"⬆️ Hover Yüksekliğini Artır (+5m)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+              [alert addAction:[UIAlertAction actionWithTitle:@"⬆️ Hover Yuksekligini Artir (+5m)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
                   hoverHeight += 5.0f;
               }]];
               
-              [alert addAction:[UIAlertAction actionWithTitle:@"⬇️ Hover Yüksekliğini Azalt (-5m)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+              [alert addAction:[UIAlertAction actionWithTitle:@"⬇️ Hover Yuksekligini Azalt (-5m)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
                   hoverHeight -= 5.0f;
               }]];
 
-              [alert addAction:[UIAlertAction actionWithTitle:@"Menüyü Kapat" style:UIAlertActionStyleCancel handler:nil]];
+              [alert addAction:[UIAlertAction actionWithTitle:@"Menuyu Kapat" style:UIAlertActionStyleCancel handler:nil]];
 
               if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
                   alert.popoverPresentationController.sourceView = window;
@@ -219,12 +218,14 @@ jobs:
                   
                   uintptr_t baseAddr = GetUnityFrameworkBase();
                   if (baseAddr != 0) {
-                      // Orijinal fonksiyonların bellek adreslerini kaydet
+                      // Fonksiyonlarin bellek adreslerini kaydet (Aktif kullanim icin)
+                      SetTimeScale = (void (*)(float))(baseAddr + 0x67523F8);
+                      AddForce = (void (*)(void*, struct Vector3, int))(baseAddr + 0x6819C80);
                       get_position = (struct Vector3 (*)(void*))(baseAddr + 0x6819010);
                       set_position = (void (*)(void*, struct Vector3))(baseAddr + 0x6819124);
                       
-                      MSHookFunction((void *)(baseAddr + 0x67523F8), (void *)hooked_set_timeScale, (void **)&old_set_timeScale);
-                      MSHookFunction((void *)(baseAddr + 0x6819C80), (void *)hooked_AddForce, (void **)&old_AddForce);
+                      // Pasif bekleme yerine aktif mudahale icin arabanin Move fonksiyonunu hookluyoruz
+                      MSHookFunction((void *)(baseAddr + 0x54B0B24), (void *)hooked_Move, (void **)&old_Move);
                   }
               });
           }
