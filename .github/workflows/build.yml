@@ -18,7 +18,7 @@ jobs:
 
       - name: Setup Theos
         run: |
-          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          git clone --recursive https://github.com/theos/theos.git ~/theos
           echo "THEOS=~/theos" >> $GITHUB_ENV
           echo "THEOS_DEVICE_IP=127.0.0.1" >> $GITHUB_ENV
           echo "THEOS_DEVICE_PORT=2222" >> $GITHUB_ENV
