@@ -34,9 +34,9 @@ jobs:
           Package: com.few1n.dreamroadmod
           Name: FEW1N Mod Menu
           Depends: mobilesubstrate
-          Version: 7.0
+          Version: 9.0
           Architecture: iphoneos-arm
-          Description: Ultimate Modern FEW1N Mod Menu
+          Description: Ultimate Modern FEW1N Mod Menu with Room Password Bypass
           Maintainer: few1n
           Author: few1n
           Section: Tweaks
@@ -72,6 +72,7 @@ jobs:
 
           struct Vector3 { float x; float y; float z; };
 
+          // Global Ayarlar
           int speedMode = 1; // 1, 2, 5, 10
           bool isHoverEnabled = false;
           float hoverHeight = 5.0f;
@@ -83,8 +84,18 @@ jobs:
           bool isTeleportRequested = false;
           struct Vector3 savedPosition = {0,0,0};
 
+          // Plaka Ayarlari
           bool isCustomPlateEnabled = false;
           char customPlateText[64] = "FEW1N";
+
+          // Chat Ayarlari
+          bool isColorChatEnabled = false;
+          bool isSpamEnabled = false;
+          char chatSpamText[128] = "🔥 FEW1N MOD MENÜ AKTİF! 🔥";
+          NSTimer *spamTimer = nil;
+
+          // Oda Sifre Kirici Ayari (Varsayilan Olarak Her Zaman Aktif)
+          bool isBypassPasswordEnabled = true;
 
           uintptr_t GetUnityFrameworkBase() {
               for (uint32_t i = 0; i < _dyld_image_count(); i++) {
@@ -96,6 +107,7 @@ jobs:
               return 0;
           }
           
+          // Function Pointers
           void (*SetTimeScale)(float value, void* method);
           struct Vector3 (*get_position)(void* instance, void* method);
           void (*set_position)(void* instance, struct Vector3 value, void* method);
@@ -105,34 +117,48 @@ jobs:
           void (*set_localScale)(void* instance, struct Vector3 value, void* method);
           void (*set_mass)(void* instance, float value, void* method);
 
-          // Hata Onleme: Il2cpp metodlarinin hepsinde son arguman olarak MethodInfo* (void*) vardir!
+          // Chat Managers
+          void* (*ChatManager_get_Instance)(void* method);
+          void (*ChatManager_Send)(void* instance, void* messageStr, void* method);
+
+          // Il2Cpp String Donusturuculer
+          NSString* toNSString(void* il2cppStr) {
+              if (!il2cppStr) return @"";
+              int32_t len = *(int32_t*)((char*)il2cppStr + 0x10);
+              unsigned short* chars = (unsigned short*)((char*)il2cppStr + 0x14);
+              return [NSString stringWithCharacters:chars length:len];
+          }
+
+          void* toIl2CppString(NSString* nsStr) {
+              void* (*il2cpp_string_new)(const char* str) = (void* (*)(const char*))dlsym(RTLD_DEFAULT, "il2cpp_string_new");
+              if (il2cpp_string_new) {
+                  return il2cpp_string_new(nsStr.UTF8String);
+              }
+              return NULL;
+          }
+
+          // MOVE HOOK (Fizikler)
           void (*old_Move)(void* instance, float steering, float accel, float footbrake, float handbrake, void* method);
-          
           void hooked_Move(void* instance, float steering, float accel, float footbrake, float handbrake, void* method) {
-              // 1. Orijinal hareketi cagir (Oyunun kendi fizigi islensin)
               old_Move(instance, steering, accel, footbrake, handbrake, method);
 
-              // 2. Bizim hileleri SONRA uygula ki oyun bizimkileri ezmesin!
               void* rb = *(void**)((char*)instance + 0x48);
               
-              // Beden/Boyut Degisimi
               if (get_transform && set_localScale) {
                   void* transform = get_transform(instance, NULL);
                   if (transform) {
                       struct Vector3 newScale = {1.0f, 1.0f, 1.0f};
-                      if (sizeMode == 1) { newScale.x = 10.0f; newScale.y = 10.0f; newScale.z = 10.0f; } // Godzilla
-                      else if (sizeMode == 2) { newScale.x = 0.0f; newScale.y = 0.0f; newScale.z = 0.0f; } // Hayalet
+                      if (sizeMode == 1) { newScale.x = 10.0f; newScale.y = 10.0f; newScale.z = 10.0f; }
+                      else if (sizeMode == 2) { newScale.x = 0.0f; newScale.y = 0.0f; newScale.z = 0.0f; }
                       set_localScale(transform, newScale, NULL);
                   }
               }
 
               if (rb && get_position && set_position && get_linearVelocity && set_linearVelocity) {
-                  // Buldozer Modu
                   if (set_mass) {
                       set_mass(rb, isBulldozerEnabled ? 999999.0f : 1500.0f, NULL);
                   }
 
-                  // Teleport (Isinlanma)
                   if (isSavePosRequested) {
                       savedPosition = get_position(rb, NULL);
                       isSavePosRequested = false;
@@ -140,14 +166,13 @@ jobs:
                   if (isTeleportRequested) {
                       set_position(rb, savedPosition, NULL);
                       struct Vector3 zeroVel = {0,0,0};
-                      set_linearVelocity(rb, zeroVel, NULL); // Isinlaninca sarsilmasin
+                      set_linearVelocity(rb, zeroVel, NULL);
                       isTeleportRequested = false;
                   }
 
-                  // Kesin Hover (Havada Asili Kalma)
                   if (isHoverEnabled) {
                       struct Vector3 vel = get_linearVelocity(rb, NULL);
-                      vel.y = 0.0f; // Asagi dusme hizini sifirla
+                      vel.y = 0.0f;
                       set_linearVelocity(rb, vel, NULL);
                       
                       struct Vector3 pos = get_position(rb, NULL);
@@ -157,13 +182,12 @@ jobs:
               }
           }
 
-          // PLAKA DEGISTIRME HOOK
+          // PLAKA HOOK
           void (*old_PlateApply)(void* instance, void* countryStr, void* textStr, void* method);
           void hooked_PlateApply(void* instance, void* countryStr, void* textStr, void* method) {
               if (isCustomPlateEnabled && customPlateText[0] != '\0') {
-                  void* (*il2cpp_string_new)(const char* str) = (void* (*)(const char*))dlsym(RTLD_DEFAULT, "il2cpp_string_new");
-                  if (il2cpp_string_new) {
-                      void* customStr = il2cpp_string_new(customPlateText);
+                  void* customStr = toIl2CppString([NSString stringWithUTF8String:customPlateText]);
+                  if (customStr) {
                       old_PlateApply(instance, countryStr, customStr, method);
                       return;
                   }
@@ -171,7 +195,35 @@ jobs:
               old_PlateApply(instance, countryStr, textStr, method);
           }
 
-          // --- MODERN UI KODLARI ---
+          // CHAT SEND HOOK
+          void (*old_ChatSend)(void* instance, void* messageStr, void* method);
+          void hooked_ChatSend(void* instance, void* messageStr, void* method) {
+              if (isColorChatEnabled) {
+                  NSString *original = toNSString(messageStr);
+                  if (original && original.length > 0) {
+                      NSString *colored = [NSString stringWithFormat:@"<color=cyan><b>[FEW1N]</b> %s</color>", original.UTF8String];
+                      void* coloredStr = toIl2CppString(colored);
+                      if (coloredStr) {
+                          old_ChatSend(instance, coloredStr, method);
+                          return;
+                      }
+                  }
+              }
+              old_ChatSend(instance, messageStr, method);
+          }
+
+          // ODA SIFRE BYPASS HOOK
+          void (*old_RoomConnect)(void* instance, void* method);
+          void hooked_RoomConnect(void* instance, void* method) {
+              if (isBypassPasswordEnabled) {
+                  // HR_UI_RoomListLine icindeki 0x50 ofsetindeki 'password' stringini NULL yapıyoruz.
+                  // Boylece oyun odanin sifresiz oldugunu dusunup direkt JoinRoom cagiriyor!
+                  *(void**)((char*)instance + 0x50) = NULL;
+              }
+              old_RoomConnect(instance, method);
+          }
+
+          // --- MODERN UI ---
           @interface FEW1NModMenu : UIView
           @end
 
@@ -191,6 +243,12 @@ jobs:
           @property (nonatomic, strong) UIButton *btnGhost;
           @property (nonatomic, strong) UIButton *btnHover;
           @property (nonatomic, strong) UIButton *btnBulldozer;
+          
+          @property (nonatomic, strong) UIButton *btnColorChat;
+          @property (nonatomic, strong) UIButton *btnChatSpam;
+          @property (nonatomic, strong) UIButton *btnBypassPassword;
+          
+          @property (nonatomic, strong) UIButton *btnCustomSpam;
           @property (nonatomic, strong) UIButton *btnCustomPlate;
           
           + (instancetype)sharedManager;
@@ -211,7 +269,6 @@ jobs:
               UIWindow *window = [UIApplication sharedApplication].keyWindow;
               if (!window) return;
 
-              // 1. Yuzen Buton (Floating Button)
               self.floatingBtn = [UIButton buttonWithType:UIButtonTypeCustom];
               self.floatingBtn.frame = CGRectMake(20, 80, 65, 65);
               self.floatingBtn.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.1 alpha:0.9];
@@ -233,8 +290,8 @@ jobs:
               [self.floatingBtn addGestureRecognizer:panBtn];
               [window addSubview:self.floatingBtn];
 
-              // 2. Ana Panel (Main Panel)
-              self.mainPanel = [[FEW1NModMenu alloc] initWithFrame:CGRectMake(0, 0, 320, 500)];
+              // Panel Boyutu Yeni Ozellikler Icin Artirildi (Height: 570)
+              self.mainPanel = [[FEW1NModMenu alloc] initWithFrame:CGRectMake(0, 0, 320, 580)];
               self.mainPanel.center = window.center;
               self.mainPanel.backgroundColor = [UIColor colorWithRed:0.05 green:0.05 blue:0.05 alpha:0.95];
               self.mainPanel.layer.cornerRadius = 15;
@@ -245,7 +302,6 @@ jobs:
               UIPanGestureRecognizer *panPanel = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragPanel:)];
               [self.mainPanel addGestureRecognizer:panPanel];
               
-              // Baslik
               UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(0, 10, 320, 30)];
               titleLbl.text = @"🔥 FEW1N MOD MENÜ";
               titleLbl.textColor = [UIColor whiteColor];
@@ -253,7 +309,6 @@ jobs:
               titleLbl.font = [UIFont boldSystemFontOfSize:22];
               [self.mainPanel addSubview:titleLbl];
               
-              // Kapat Butonu
               UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
               closeBtn.frame = CGRectMake(280, 10, 30, 30);
               [closeBtn setTitle:@"X" forState:UIControlStateNormal];
@@ -262,9 +317,9 @@ jobs:
               [closeBtn addTarget:self action:@selector(togglePanel) forControlEvents:UIControlEventTouchUpInside];
               [self.mainPanel addSubview:closeBtn];
 
-              // Hiz Butonlari Kutusu (Yan Yana)
+              // Hiz Ayari
               UILabel *speedLbl = [[UILabel alloc] initWithFrame:CGRectMake(10, 50, 300, 20)];
-              speedLbl.text = @"Hız Kontrolü (Oto Aktif):";
+              speedLbl.text = @"Hız Kontrolü:";
               speedLbl.textColor = [UIColor lightGrayColor];
               speedLbl.font = [UIFont systemFontOfSize:14];
               [self.mainPanel addSubview:speedLbl];
@@ -278,7 +333,7 @@ jobs:
               [self.mainPanel addSubview:self.btnSpeed5];
               [self.mainPanel addSubview:self.btnSpeed10];
 
-              // Diger Hileler
+              // Toggles
               self.btnGodzilla = [self createToggleBtn:@"🦖 Godzilla Modu" frame:CGRectMake(10, 130, 300, 40) action:@selector(toggleGodzilla)];
               self.btnGhost = [self createToggleBtn:@"👻 Hayalet Modu" frame:CGRectMake(10, 180, 300, 40) action:@selector(toggleGhost)];
               self.btnBulldozer = [self createToggleBtn:@"🔨 Buldozer Modu" frame:CGRectMake(10, 230, 300, 40) action:@selector(toggleBulldozer)];
@@ -289,7 +344,7 @@ jobs:
               [self.mainPanel addSubview:self.btnBulldozer];
               [self.mainPanel addSubview:self.btnHover];
 
-              // Hover Yukseklik Ayarlari (Hover altina)
+              // Hover Yon Butonlari
               UIButton *btnUp = [self createBtn:@"⬆️ +5m" frame:CGRectMake(10, 325, 145, 35) action:@selector(hoverUp)];
               UIButton *btnDown = [self createBtn:@"⬇️ -5m" frame:CGRectMake(165, 325, 145, 35) action:@selector(hoverDown)];
               [self.mainPanel addSubview:btnUp];
@@ -303,10 +358,22 @@ jobs:
               [self.mainPanel addSubview:btnSave];
               [self.mainPanel addSubview:btnTeleport];
 
-              // PLAKA BELIRLEME BUTONU
-              self.btnCustomPlate = [self createBtn:@"📝 Plaka Yazısını Değiştir" frame:CGRectMake(10, 430, 300, 45) action:@selector(setCustomPlate)];
+              // CHAT RENKLENDIRICI VE SPAMMER BUTONLARI (Y: 425)
+              self.btnColorChat = [self createToggleBtn:@"🎨 Renkli Chat" frame:CGRectMake(10, 425, 145, 40) action:@selector(toggleColorChat)];
+              self.btnChatSpam = [self createToggleBtn:@"📢 Chat Spam" frame:CGRectMake(165, 425, 145, 40) action:@selector(toggleChatSpam)];
+              [self.mainPanel addSubview:self.btnColorChat];
+              [self.mainPanel addSubview:self.btnChatSpam];
+
+              // ODA SIFRE KIRICI (Y: 475 - Tam Genislik)
+              self.btnBypassPassword = [self createToggleBtn:@"🔑 Oda Şifre Kırıcı (Bypass)" frame:CGRectMake(10, 475, 300, 40) action:@selector(toggleBypassPassword)];
+              [self.mainPanel addSubview:self.btnBypassPassword];
+
+              // SPAM METNI VE PLAKA METNI (Y: 525)
+              self.btnCustomSpam = [self createBtn:@"💬 Spam Yazısı" frame:CGRectMake(10, 525, 145, 40) action:@selector(setCustomSpam)];
+              self.btnCustomPlate = [self createBtn:@"📝 Plaka Yazısı" frame:CGRectMake(165, 525, 145, 40) action:@selector(setCustomPlate)];
+              self.btnCustomSpam.backgroundColor = [UIColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:1.0];
               self.btnCustomPlate.backgroundColor = [UIColor colorWithRed:0.8 green:0.5 blue:0.1 alpha:1.0];
-              self.btnCustomPlate.titleLabel.font = [UIFont boldSystemFontOfSize:18];
+              [self.mainPanel addSubview:self.btnCustomSpam];
               [self.mainPanel addSubview:self.btnCustomPlate];
 
               [window addSubview:self.mainPanel];
@@ -320,18 +387,17 @@ jobs:
               [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
               btn.backgroundColor = [UIColor darkGrayColor];
               btn.layer.cornerRadius = 8;
-              btn.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+              btn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
               [btn addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
               return btn;
           }
 
           - (UIButton *)createToggleBtn:(NSString *)title frame:(CGRect)frame action:(SEL)action {
               UIButton *btn = [self createBtn:title frame:frame action:action];
-              btn.backgroundColor = [UIColor colorWithRed:0.8 green:0.2 blue:0.2 alpha:1.0]; // Kirmizi
+              btn.backgroundColor = [UIColor colorWithRed:0.8 green:0.2 blue:0.2 alpha:1.0];
               return btn;
           }
 
-          // Surukleme Fonksiyonlari
           - (void)dragButton:(UIPanGestureRecognizer *)pan {
               UIView *view = pan.view;
               CGPoint translation = [pan translationInView:view.superview];
@@ -349,13 +415,11 @@ jobs:
               self.mainPanel.hidden = !self.mainPanel.hidden;
           }
 
-          // Hız Aksiyonları
           - (void)setSpeed1 { speedMode = 1; if (SetTimeScale) SetTimeScale(1.0f, NULL); [self updateUIColors]; }
           - (void)setSpeed25 { speedMode = 2; if (SetTimeScale) SetTimeScale(2.5f, NULL); [self updateUIColors]; }
           - (void)setSpeed5 { speedMode = 5; if (SetTimeScale) SetTimeScale(5.0f, NULL); [self updateUIColors]; }
           - (void)setSpeed10 { speedMode = 10; if (SetTimeScale) SetTimeScale(10.0f, NULL); [self updateUIColors]; }
 
-          // Toggle Aksiyonları
           - (void)toggleGodzilla { sizeMode = (sizeMode == 1) ? 0 : 1; [self updateUIColors]; }
           - (void)toggleGhost { sizeMode = (sizeMode == 2) ? 0 : 2; [self updateUIColors]; }
           - (void)toggleBulldozer { isBulldozerEnabled = !isBulldozerEnabled; [self updateUIColors]; }
@@ -366,7 +430,68 @@ jobs:
           - (void)savePos { isSavePosRequested = true; }
           - (void)teleportPos { isTeleportRequested = true; }
 
-          // PLAKA BELIRLEME AKSİYONU
+          - (void)toggleColorChat { isColorChatEnabled = !isColorChatEnabled; [self updateUIColors]; }
+          
+          - (void)toggleChatSpam {
+              isSpamEnabled = !isSpamEnabled;
+              if (isSpamEnabled) {
+                  spamTimer = [NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(sendSpamMessage) userInfo:nil repeats:YES];
+              } else {
+                  if (spamTimer) {
+                      [spamTimer invalidate];
+                      spamTimer = nil;
+                  }
+              }
+              [self updateUIColors];
+          }
+
+          - (void)toggleBypassPassword {
+              isBypassPasswordEnabled = !isBypassPasswordEnabled;
+              [self updateUIColors];
+          }
+
+          - (void)sendSpamMessage {
+              if (ChatManager_get_Instance && ChatManager_Send) {
+                  void* chatMgr = ChatManager_get_Instance(NULL);
+                  if (chatMgr) {
+                      NSString *spamMsg = [NSString stringWithUTF8String:chatSpamText];
+                      if (isColorChatEnabled) {
+                          spamMsg = [NSString stringWithFormat:@"<color=cyan><b>[FEW1N]</b> %s</color>", chatSpamText];
+                      }
+                      void* il2cppSpam = toIl2CppString(spamMsg);
+                      if (il2cppSpam) {
+                          ChatManager_Send(chatMgr, il2cppSpam, NULL);
+                      }
+                  }
+              }
+          }
+
+          - (void)setCustomSpam {
+              UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Spam Yazısı" message:@"Chat'e sürekli yazılacak mesajı girin:" preferredStyle:UIAlertControllerStyleAlert];
+              
+              [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+                  textField.placeholder = @"Örn: FEW1N MOD AKTİF!";
+                  textField.text = [NSString stringWithUTF8String:chatSpamText];
+              }];
+              
+              UIAlertAction *ok = [UIAlertAction actionWithTitle:@"Kaydet" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                  UITextField *tf = alert.textFields.firstObject;
+                  if (tf.text.length > 0) {
+                      strncpy(chatSpamText, tf.text.UTF8String, 127);
+                  }
+              }];
+              
+              UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"Kapat" style:UIAlertActionStyleCancel handler:nil];
+              [alert addAction:cancel];
+              [alert addAction:ok];
+              
+              UIViewController *rootVC = [UIApplication sharedApplication].keyWindow.rootViewController;
+              if (rootVC) {
+                  UIViewController *presented = rootVC.presentedViewController;
+                  [ (presented ? presented : rootVC) presentViewController:alert animated:YES completion:nil];
+              }
+          }
+
           - (void)setCustomPlate {
               UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Özel Plaka" message:@"Plakanızda ne yazmasını istersiniz?" preferredStyle:UIAlertControllerStyleAlert];
               
@@ -386,7 +511,7 @@ jobs:
                   }
               }];
               
-              UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"İptal / Temizle" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+              UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"Temizle" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
                   isCustomPlateEnabled = false;
                   [self updateUIColors];
               }];
@@ -397,11 +522,7 @@ jobs:
               UIViewController *rootVC = [UIApplication sharedApplication].keyWindow.rootViewController;
               if (rootVC) {
                   UIViewController *presented = rootVC.presentedViewController;
-                  if (presented) {
-                      [presented presentViewController:alert animated:YES completion:nil];
-                  } else {
-                      [rootVC presentViewController:alert animated:YES completion:nil];
-                  }
+                  [ (presented ? presented : rootVC) presentViewController:alert animated:YES completion:nil];
               }
           }
 
@@ -420,12 +541,16 @@ jobs:
               self.btnBulldozer.backgroundColor = isBulldozerEnabled ? colorOn : colorOff;
               self.btnHover.backgroundColor = isHoverEnabled ? colorOn : colorOff;
               
+              self.btnColorChat.backgroundColor = isColorChatEnabled ? colorOn : colorOff;
+              self.btnChatSpam.backgroundColor = isSpamEnabled ? colorOn : colorOff;
+              self.btnBypassPassword.backgroundColor = isBypassPasswordEnabled ? colorOn : colorOff;
+              
               if (isCustomPlateEnabled) {
                   self.btnCustomPlate.backgroundColor = colorOn;
-                  [self.btnCustomPlate setTitle:[NSString stringWithFormat:@"✅ Plaka: %s", customPlateText] forState:UIControlStateNormal];
+                  [self.btnCustomPlate setTitle:[NSString stringWithFormat:@"Plaka: %s", customPlateText] forState:UIControlStateNormal];
               } else {
                   self.btnCustomPlate.backgroundColor = [UIColor colorWithRed:0.8 green:0.5 blue:0.1 alpha:1.0];
-                  [self.btnCustomPlate setTitle:@"📝 Plaka Yazısını Değiştir" forState:UIControlStateNormal];
+                  [self.btnCustomPlate setTitle:@"📝 Plaka Yazısı" forState:UIControlStateNormal];
               }
           }
           @end
@@ -447,10 +572,15 @@ jobs:
                       set_localScale = (void (*)(void*, struct Vector3, void*))(baseAddr + 0x6757F98);
                       set_mass = (void (*)(void*, float, void*))(baseAddr + 0x681869C);
                       
-                      MSHookFunction((void *)(baseAddr + 0x54B0B24), (void *)hooked_Move, (void **)&old_Move);
+                      ChatManager_get_Instance = (void* (*)(void*))(baseAddr + 0x319D630);
+                      ChatManager_Send = (void (*)(void*, void*, void*))(baseAddr + 0x319D734);
                       
-                      // PlateTuner.Apply Hook
+                      MSHookFunction((void *)(baseAddr + 0x54B0B24), (void *)hooked_Move, (void **)&old_Move);
                       MSHookFunction((void *)(baseAddr + 0x5F7B9BC), (void *)hooked_PlateApply, (void **)&old_PlateApply);
+                      MSHookFunction((void *)(baseAddr + 0x319D734), (void *)hooked_ChatSend, (void **)&old_ChatSend);
+                      
+                      // ODA SIFRE BYPASS HOOK
+                      MSHookFunction((void *)(baseAddr + 0x5497790), (void *)hooked_RoomConnect, (void **)&old_RoomConnect);
                   }
               });
           }
