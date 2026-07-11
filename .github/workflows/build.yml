@@ -30,7 +30,6 @@ jobs:
 
       - name: Create Tweak Files
         run: |
-          # 1. Control Dosyası
           cat << 'EOF' > control
           Package: com.ilbas.dreamroadmod
           Name: DreamRoadMod
@@ -43,7 +42,6 @@ jobs:
           Section: Tweaks
           EOF
 
-          # 2. Makefile
           cat << 'EOF' > Makefile
           TARGET := iphone:clang:latest:14.0
           ARCHS = arm64
@@ -60,18 +58,18 @@ jobs:
           include $(THEOS_MAKE_PATH)/tweak.mk
           EOF
 
-          # 3. Plist Dosyası
           cat << 'EOF' > DreamRoadMod.plist
           { Filter = { Bundles = ( "com.TenebryFox.DreamRoadMultiplayer" ); }; }
           EOF
 
-          # 4. Tweak.xm
           cat << 'EOF' > Tweak.xm
           #import <Foundation/Foundation.h>
           #import <UIKit/UIKit.h>
           #include <substrate.h>
           #include <mach-o/dyld.h>
           #include <string.h>
+
+          struct Vector3 { float x; float y; float z; };
 
           bool isFlyingCarEnabled = false;
           float jumpForce = 5000.0f;
@@ -94,8 +92,6 @@ jobs:
               }
               return 0;
           }
-
-          struct Vector3 { float x; float y; float z; };
           
           void (*SetTimeScale)(float value);
           void (*AddForce)(void* instance, struct Vector3 force, int mode);
@@ -108,10 +104,9 @@ jobs:
           void (*old_Move)(void* instance, float steering, float accel, float footbrake, float handbrake);
           
           void hooked_Move(void* instance, float steering, float accel, float footbrake, float handbrake) {
-              void* rb = *(void**)((uint8_t*)instance + 0x48);
+              void* rb = *(void**)((char*)instance + 0x48);
               if (rb && get_position && set_position && AddForce && get_transform && set_localScale && set_mass) {
                   
-                  // Godzilla ve Gorunmezlik
                   static int lastSizeMode = -1;
                   if (sizeMode != lastSizeMode) {
                       void* transform = get_transform(instance);
@@ -124,14 +119,12 @@ jobs:
                       lastSizeMode = sizeMode;
                   }
 
-                  // Buldozer Modu (Agirlik)
                   static bool lastBulldozer = false;
                   if (isBulldozerEnabled != lastBulldozer) {
                       set_mass(rb, isBulldozerEnabled ? 999999.0f : 1500.0f);
                       lastBulldozer = isBulldozerEnabled;
                   }
 
-                  // Isinlanma (Teleport)
                   if (isSavePosRequested) {
                       savedPosition = get_position(rb);
                       isSavePosRequested = false;
@@ -141,7 +134,6 @@ jobs:
                       isTeleportRequested = false;
                   }
 
-                  // Hover ve Ucus
                   if (isHoverEnabled) {
                       struct Vector3 pos = get_position(rb);
                       pos.y = hoverHeight;
@@ -155,7 +147,6 @@ jobs:
               old_Move(instance, steering, accel, footbrake, handbrake);
           }
 
-          // --- UI (MENU) KODLARI ---
           @interface ModMenuManager : NSObject
           + (instancetype)sharedManager;
           - (void)setupMenu;
@@ -203,11 +194,9 @@ jobs:
 
               UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🔥 FEW1N MOD MENÜ" message:@"En Cılgin Hileler" preferredStyle:UIAlertControllerStyleActionSheet];
 
-              // HIZ HILELERI
               [alert addAction:[UIAlertAction actionWithTitle:@"Normal Hiz" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { if (SetTimeScale) SetTimeScale(1.0f); }]];
               [alert addAction:[UIAlertAction actionWithTitle:@"Super Hiz (5x)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { if (SetTimeScale) SetTimeScale(5.0f); }]];
 
-              // YENI: BEDEN HILELERI
               NSString *sizeTitle = (sizeMode == 1) ? @"🦖 Godzilla Modu: KAPAT" : @"🦖 Godzilla Modu: AC (Dev)";
               [alert addAction:[UIAlertAction actionWithTitle:sizeTitle style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) { sizeMode = (sizeMode == 1) ? 0 : 1; }]];
               
@@ -217,11 +206,9 @@ jobs:
               NSString *bullTitle = isBulldozerEnabled ? @"🔨 Buldozer: KAPAT" : @"🔨 Buldozer: AC (999.999 KG)";
               [alert addAction:[UIAlertAction actionWithTitle:bullTitle style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) { isBulldozerEnabled = !isBulldozerEnabled; }]];
 
-              // YENI: ISINLANMA
               [alert addAction:[UIAlertAction actionWithTitle:@"📍 Konumumu Kaydet" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { isSavePosRequested = true; }]];
               [alert addAction:[UIAlertAction actionWithTitle:@"⚡ Kaydedilen Yere Isinlan" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { isTeleportRequested = true; }]];
 
-              // UCUS VE HOVER
               NSString *hoverTitle = isHoverEnabled ? @"🚁 Hover: KAPAT" : @"🚁 Hover: AC";
               [alert addAction:[UIAlertAction actionWithTitle:hoverTitle style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) { isHoverEnabled = !isHoverEnabled; }]];
 
