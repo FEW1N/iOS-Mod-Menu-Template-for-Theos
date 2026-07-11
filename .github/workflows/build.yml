@@ -10,10 +10,11 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Install Dependencies (dpkg, ldid)
+        run: |
+          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
+          brew update
+          brew install dpkg ldid xz
 
       - name: Setup Theos
         run: |
@@ -26,6 +27,94 @@ jobs:
         run: |
           git clone https://github.com/theos/sdks.git
           cp -r sdks/* ~/theos/sdks/
+
+      - name: Create Tweak Files
+        run: |
+          # 1. Control Dosyası (Paket Bilgileri)
+          cat << 'EOF' > control
+          Package: com.ilbas.dreamroadmod
+          Name: DreamRoadMod
+          Depends: mobilesubstrate
+          Version: 1.0
+          Architecture: iphoneos-arm
+          Description: Dream Road Hile Menusu
+          Maintainer: ilbas
+          Author: ilbas
+          Section: Tweaks
+          EOF
+
+          # 2. Makefile (Derleme Ayarları)
+          cat << 'EOF' > Makefile
+          TARGET := iphone:clang:latest:14.0
+          ARCHS = arm64
+          INSTALL_TARGET_PROCESSES = DreamRoadMultiplayer
+
+          include ~/theos/makefiles/common.mk
+
+          TWEAK_NAME = DreamRoadMod
+
+          DreamRoadMod_FILES = Tweak.xm
+          DreamRoadMod_CFLAGS = -fobjc-arc
+          DreamRoadMod_FRAMEWORKS = UIKit Foundation
+
+          include $(THEOS_MAKE_PATH)/tweak.mk
+          EOF
+
+          # 3. Plist Dosyası (Hangi oyunda çalışacak)
+          cat << 'EOF' > DreamRoadMod.plist
+          { Filter = { Bundles = ( "com.TenebryFox.DreamRoadMultiplayer" ); }; }
+          EOF
+
+          # 4. Tweak.xm (Hile Kodlarımız)
+          cat << 'EOF' > Tweak.xm
+          #import <Foundation/Foundation.h>
+          #import <UIKit/UIKit.h>
+          #include <substrate.h>
+          #include <mach-o/dyld.h>
+
+          bool isSpeedHackEnabled = true;
+          float speedMultiplier = 5.0f;
+          bool isFlyingCarEnabled = true;
+          float jumpForce = 50000.0f;
+
+          uintptr_t GetUnityFrameworkBase() {
+              for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+                  const char *image_name = _dyld_get_image_name(i);
+                  if (strstr(image_name, "UnityFramework")) {
+                      return _dyld_get_image_vmaddr_slide(i);
+                  }
+              }
+              return 0;
+          }
+
+          void (*old_set_timeScale)(float value);
+          void (*old_AddForce)(void* instance, float x, float y, float z, int mode);
+
+          void hooked_set_timeScale(float value) {
+              if (isSpeedHackEnabled) {
+                  old_set_timeScale(speedMultiplier);
+              } else {
+                  old_set_timeScale(value);
+              }
+          }
+
+          void hooked_AddForce(void* instance, float x, float y, float z, int mode) {
+              if (isFlyingCarEnabled) {
+                  y += jumpForce;
+              }
+              old_AddForce(instance, x, y, z, mode);
+          }
+
+          %ctor {
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                  uintptr_t baseAddr = GetUnityFrameworkBase();
+                  if (baseAddr != 0) {
+                      MSHookFunction((void *)(baseAddr + 0x67523F8), (void *)hooked_set_timeScale, (void **)&old_set_timeScale);
+                      MSHookFunction((void *)(baseAddr + 0x6819C80), (void *)hooked_AddForce, (void **)&old_AddForce);
+                  }
+              });
+          }
+          EOF
 
       - name: Build Tweak (Dylib/Deb)
         run: |
