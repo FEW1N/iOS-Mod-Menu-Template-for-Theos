@@ -1,76 +1,40 @@
-name: Build dylib and deb
+name: Build iOS Mod Menu
 
 on:
   push:
-    branches: [ master, add-build-workflow ]
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    
+    runs-on: macos-latest
+
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y git build-essential fakeroot clang llvm wget curl
+      - name: Setup Theos
+        run: |
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          echo "THEOS=~/theos" >> $GITHUB_ENV
+          echo "THEOS_DEVICE_IP=127.0.0.1" >> $GITHUB_ENV
+          echo "THEOS_DEVICE_PORT=2222" >> $GITHUB_ENV
 
-    - name: Setup Theos
-      run: |
-        git clone --depth 1 https://github.com/theos/theos.git ~/theos
-        mkdir -p ~/theos/sdks
-        echo "$HOME/theos/bin" >> $GITHUB_PATH
-        echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+      - name: Setup iOS SDK
+        run: |
+          git clone https://github.com/theos/sdks.git
+          cp -r sdks/* ~/theos/sdks/
 
-    - name: Download SDK
-      run: |
-        cd ~/theos/sdks
-        echo "Downloading iOS SDK..."
-        wget -q https://github.com/theos/sdks/releases/download/latest/iPhoneOS14.5.sdk.tar.gz -O sdk.tar.gz 2>/dev/null || \
-        wget -q https://github.com/theos/sdks/releases/download/latest/iPhoneOS.sdk.tar.gz -O sdk.tar.gz 2>/dev/null || true
-        
-        if [ -f sdk.tar.gz ]; then
-          tar xzf sdk.tar.gz
-          rm sdk.tar.gz
-          ls -la
-        fi
+      - name: Build Tweak (Dylib/Deb)
+        run: |
+          export THEOS=~/theos
+          make package clean
+          make package FINALPACKAGE=1
 
-    - name: Fix Makefile
-      run: |
-        cd template
-        sed -i 's/@@PROJECTNAME@@/ModMenu/g' Makefile
-        sed -i 's/@@BINARYNAME@@/ModMenu/g' Makefile
-        grep "TWEAK_NAME\|FILES" Makefile | head -5
-
-    - name: Build
-      run: |
-        export THEOS=$HOME/theos
-        export PATH=$THEOS/bin:$PATH
-        cd template
-        echo "=== THEOS: $THEOS ==="
-        echo "=== Checking files ==="
-        ls -la
-        make --version
-        echo "=== Building ==="
-        make package 2>&1 | tee build.log
-        echo "=== Build finished ==="
-
-    - name: List outputs
-      if: always()
-      run: |
-        echo "=== Searching for artifacts ==="
-        find template -type f \( -name "*.deb" -o -name "*.dylib" \) 2>/dev/null | head -20
-        echo "=== Template contents ==="
-        ls -lah template/ 2>/dev/null
-
-    - name: Upload everything
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: build-artifacts
-        path: |
-          template/
-          build.log
-        retention-days: 7
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ModMenu-Tweak
+          path: packages/*.deb
