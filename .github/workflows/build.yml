@@ -2,47 +2,64 @@ name: Build dylib and deb
 
 on:
   push:
-    branches: [ master, main, add-build-workflow ]
-  pull_request:
-    branches: [ master, main ]
+    branches: [ master, add-build-workflow ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: theos/theos:latest
-
+    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
-    - name: Setup Theos environment
+    - name: Install build tools
       run: |
-        export THEOS=/theos
-        export PATH=$THEOS/bin:$PATH
-        echo "THEOS=$THEOS" >> $GITHUB_ENV
-        echo "$THEOS/bin" >> $GITHUB_PATH
+        sudo apt-get update
+        sudo apt-get install -y build-essential git curl wget fakeroot
 
-    - name: Build dylib and deb package
+    - name: Clone Theos
+      run: |
+        git clone --depth 1 https://github.com/theos/theos.git $HOME/theos
+        echo "$HOME/theos/bin" >> $GITHUB_PATH
+        echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+
+    - name: Setup iOS SDK
+      run: |
+        mkdir -p $THEOS/sdks
+        cd $THEOS/sdks
+        
+        echo "Attempting to download iOS SDK..."
+        if ! wget -q --timeout=30 https://github.com/theos/sdks/releases/download/latest/iPhoneOS.sdk.tar.gz 2>/dev/null; then
+          echo "Failed to download, trying alternative URL..."
+          wget -q https://github.com/theos/sdks/releases/download/latest/iPhoneOS14.5.sdk.tar.gz 2>/dev/null || true
+        fi
+        
+        if ls *.tar.gz 1> /dev/null 2>&1; then
+          tar xzf *.tar.gz
+          rm -f *.tar.gz
+          echo "SDK extracted successfully"
+        else
+          echo "No SDK found, will attempt build anyway"
+        fi
+
+    - name: Build
       run: |
         cd template
-        make clean
-        make package
+        export THEOS=$HOME/theos
+        export PATH=$THEOS/bin:$PATH
         
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v3
+        echo "=== Environment ==="
+        echo "THEOS: $THEOS"
+        which make || echo "make not found"
+        
+        echo "=== Building ==="
+        make clean 2>&1 || true
+        make package 2>&1
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: build-artifacts
-        path: |
-          template/.theos/obj/
-          template/packages/
+        name: build-output
+        path: template/
         retention-days: 30
-
-    - name: Create Release (on tag)
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: template/packages/*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
