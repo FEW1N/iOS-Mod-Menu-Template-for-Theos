@@ -34,7 +34,7 @@ jobs:
           Package: com.few1n.dreamroadmod
           Name: FEW1N Mod Menu
           Depends: mobilesubstrate
-          Version: 6.0
+          Version: 7.0
           Architecture: iphoneos-arm
           Description: Ultimate Modern FEW1N Mod Menu
           Maintainer: few1n
@@ -68,6 +68,7 @@ jobs:
           #include <substrate.h>
           #include <mach-o/dyld.h>
           #include <string.h>
+          #include <dlfcn.h>
 
           struct Vector3 { float x; float y; float z; };
 
@@ -82,6 +83,9 @@ jobs:
           bool isTeleportRequested = false;
           struct Vector3 savedPosition = {0,0,0};
 
+          bool isCustomPlateEnabled = false;
+          char customPlateText[64] = "FEW1N";
+
           uintptr_t GetUnityFrameworkBase() {
               for (uint32_t i = 0; i < _dyld_image_count(); i++) {
                   const char *image_name = _dyld_get_image_name(i);
@@ -92,67 +96,79 @@ jobs:
               return 0;
           }
           
-          void (*SetTimeScale)(float value);
-          struct Vector3 (*get_position)(void* instance);
-          void (*set_position)(void* instance, struct Vector3 value);
-          struct Vector3 (*get_linearVelocity)(void* instance);
-          void (*set_linearVelocity)(void* instance, struct Vector3 value);
-          void* (*get_transform)(void* instance);
-          void (*set_localScale)(void* instance, struct Vector3 value);
-          void (*set_mass)(void* instance, float value);
+          void (*SetTimeScale)(float value, void* method);
+          struct Vector3 (*get_position)(void* instance, void* method);
+          void (*set_position)(void* instance, struct Vector3 value, void* method);
+          struct Vector3 (*get_linearVelocity)(void* instance, void* method);
+          void (*set_linearVelocity)(void* instance, struct Vector3 value, void* method);
+          void* (*get_transform)(void* instance, void* method);
+          void (*set_localScale)(void* instance, struct Vector3 value, void* method);
+          void (*set_mass)(void* instance, float value, void* method);
 
-          void (*old_Move)(void* instance, float steering, float accel, float footbrake, float handbrake);
+          // Hata Onleme: Il2cpp metodlarinin hepsinde son arguman olarak MethodInfo* (void*) vardir!
+          void (*old_Move)(void* instance, float steering, float accel, float footbrake, float handbrake, void* method);
           
-          void hooked_Move(void* instance, float steering, float accel, float footbrake, float handbrake) {
-              void* rb = *(void**)((char*)instance + 0x48);
-              if (rb && get_position && set_position && get_linearVelocity && set_linearVelocity) {
-                  
-                  // Beden/Boyut Degisimi
-                  if (get_transform && set_localScale) {
-                      static int lastSizeMode = -1;
-                      if (sizeMode != lastSizeMode) {
-                          void* transform = get_transform(instance);
-                          if (transform) {
-                              struct Vector3 newScale = {1.0f, 1.0f, 1.0f};
-                              if (sizeMode == 1) { newScale.x = 10.0f; newScale.y = 10.0f; newScale.z = 10.0f; } // Godzilla
-                              else if (sizeMode == 2) { newScale.x = 0.0f; newScale.y = 0.0f; newScale.z = 0.0f; } // Hayalet
-                              set_localScale(transform, newScale);
-                          }
-                          lastSizeMode = sizeMode;
-                      }
-                  }
+          void hooked_Move(void* instance, float steering, float accel, float footbrake, float handbrake, void* method) {
+              // 1. Orijinal hareketi cagir (Oyunun kendi fizigi islensin)
+              old_Move(instance, steering, accel, footbrake, handbrake, method);
 
+              // 2. Bizim hileleri SONRA uygula ki oyun bizimkileri ezmesin!
+              void* rb = *(void**)((char*)instance + 0x48);
+              
+              // Beden/Boyut Degisimi
+              if (get_transform && set_localScale) {
+                  void* transform = get_transform(instance, NULL);
+                  if (transform) {
+                      struct Vector3 newScale = {1.0f, 1.0f, 1.0f};
+                      if (sizeMode == 1) { newScale.x = 10.0f; newScale.y = 10.0f; newScale.z = 10.0f; } // Godzilla
+                      else if (sizeMode == 2) { newScale.x = 0.0f; newScale.y = 0.0f; newScale.z = 0.0f; } // Hayalet
+                      set_localScale(transform, newScale, NULL);
+                  }
+              }
+
+              if (rb && get_position && set_position && get_linearVelocity && set_linearVelocity) {
                   // Buldozer Modu
                   if (set_mass) {
-                      static bool lastBulldozer = false;
-                      if (isBulldozerEnabled != lastBulldozer) {
-                          set_mass(rb, isBulldozerEnabled ? 999999.0f : 1500.0f);
-                          lastBulldozer = isBulldozerEnabled;
-                      }
+                      set_mass(rb, isBulldozerEnabled ? 999999.0f : 1500.0f, NULL);
                   }
 
                   // Teleport (Isinlanma)
                   if (isSavePosRequested) {
-                      savedPosition = get_position(rb);
+                      savedPosition = get_position(rb, NULL);
                       isSavePosRequested = false;
                   }
                   if (isTeleportRequested) {
-                      set_position(rb, savedPosition);
+                      set_position(rb, savedPosition, NULL);
+                      struct Vector3 zeroVel = {0,0,0};
+                      set_linearVelocity(rb, zeroVel, NULL); // Isinlaninca sarsilmasin
                       isTeleportRequested = false;
                   }
 
-                  // Kesin Hover (Havada Asili Kalma) - LinearVelocity kullanarak yercekimini eziyoruz
+                  // Kesin Hover (Havada Asili Kalma)
                   if (isHoverEnabled) {
-                      struct Vector3 vel = get_linearVelocity(rb);
-                      vel.y = 0.0f; // Y eksenindeki (asagi dusme) hizini sifirla
-                      set_linearVelocity(rb, vel);
+                      struct Vector3 vel = get_linearVelocity(rb, NULL);
+                      vel.y = 0.0f; // Asagi dusme hizini sifirla
+                      set_linearVelocity(rb, vel, NULL);
                       
-                      struct Vector3 pos = get_position(rb);
+                      struct Vector3 pos = get_position(rb, NULL);
                       pos.y = hoverHeight;
-                      set_position(rb, pos);
+                      set_position(rb, pos, NULL);
                   } 
               }
-              old_Move(instance, steering, accel, footbrake, handbrake);
+          }
+
+          // PLAKA DEGISTIRME HOOK
+          void (*old_PlateApply)(void* instance, void* countryStr, void* textStr, void* method);
+          void hooked_PlateApply(void* instance, void* countryStr, void* textStr, void* method) {
+              if (isCustomPlateEnabled && customPlateText[0] != '\0') {
+                  void* (*il2cpp_string_new)(const char* str) = (void* (*)(const char*))dlsym(RTLD_DEFAULT, "il2cpp_string_new");
+                  if (il2cpp_string_new) {
+                      void* customStr = il2cpp_string_new(customPlateText);
+                      old_PlateApply(instance, countryStr, customStr, method);
+                      return;
+                  }
+              }
+              old_PlateApply(instance, countryStr, textStr, method);
           }
 
           // --- MODERN UI KODLARI ---
@@ -175,6 +191,7 @@ jobs:
           @property (nonatomic, strong) UIButton *btnGhost;
           @property (nonatomic, strong) UIButton *btnHover;
           @property (nonatomic, strong) UIButton *btnBulldozer;
+          @property (nonatomic, strong) UIButton *btnCustomPlate;
           
           + (instancetype)sharedManager;
           - (void)setupUI;
@@ -217,7 +234,7 @@ jobs:
               [window addSubview:self.floatingBtn];
 
               // 2. Ana Panel (Main Panel)
-              self.mainPanel = [[FEW1NModMenu alloc] initWithFrame:CGRectMake(0, 0, 320, 480)];
+              self.mainPanel = [[FEW1NModMenu alloc] initWithFrame:CGRectMake(0, 0, 320, 500)];
               self.mainPanel.center = window.center;
               self.mainPanel.backgroundColor = [UIColor colorWithRed:0.05 green:0.05 blue:0.05 alpha:0.95];
               self.mainPanel.layer.cornerRadius = 15;
@@ -286,6 +303,12 @@ jobs:
               [self.mainPanel addSubview:btnSave];
               [self.mainPanel addSubview:btnTeleport];
 
+              // PLAKA BELIRLEME BUTONU
+              self.btnCustomPlate = [self createBtn:@"📝 Plaka Yazısını Değiştir" frame:CGRectMake(10, 430, 300, 45) action:@selector(setCustomPlate)];
+              self.btnCustomPlate.backgroundColor = [UIColor colorWithRed:0.8 green:0.5 blue:0.1 alpha:1.0];
+              self.btnCustomPlate.titleLabel.font = [UIFont boldSystemFontOfSize:18];
+              [self.mainPanel addSubview:self.btnCustomPlate];
+
               [window addSubview:self.mainPanel];
               [self updateUIColors];
           }
@@ -327,10 +350,10 @@ jobs:
           }
 
           // Hız Aksiyonları
-          - (void)setSpeed1 { speedMode = 1; if (SetTimeScale) SetTimeScale(1.0f); [self updateUIColors]; }
-          - (void)setSpeed25 { speedMode = 2; if (SetTimeScale) SetTimeScale(2.5f); [self updateUIColors]; }
-          - (void)setSpeed5 { speedMode = 5; if (SetTimeScale) SetTimeScale(5.0f); [self updateUIColors]; }
-          - (void)setSpeed10 { speedMode = 10; if (SetTimeScale) SetTimeScale(10.0f); [self updateUIColors]; }
+          - (void)setSpeed1 { speedMode = 1; if (SetTimeScale) SetTimeScale(1.0f, NULL); [self updateUIColors]; }
+          - (void)setSpeed25 { speedMode = 2; if (SetTimeScale) SetTimeScale(2.5f, NULL); [self updateUIColors]; }
+          - (void)setSpeed5 { speedMode = 5; if (SetTimeScale) SetTimeScale(5.0f, NULL); [self updateUIColors]; }
+          - (void)setSpeed10 { speedMode = 10; if (SetTimeScale) SetTimeScale(10.0f, NULL); [self updateUIColors]; }
 
           // Toggle Aksiyonları
           - (void)toggleGodzilla { sizeMode = (sizeMode == 1) ? 0 : 1; [self updateUIColors]; }
@@ -342,6 +365,45 @@ jobs:
           - (void)hoverDown { hoverHeight -= 5.0f; }
           - (void)savePos { isSavePosRequested = true; }
           - (void)teleportPos { isTeleportRequested = true; }
+
+          // PLAKA BELIRLEME AKSİYONU
+          - (void)setCustomPlate {
+              UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Özel Plaka" message:@"Plakanızda ne yazmasını istersiniz?" preferredStyle:UIAlertControllerStyleAlert];
+              
+              [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+                  textField.placeholder = @"Örn: FEW1N";
+                  if (isCustomPlateEnabled) {
+                      textField.text = [NSString stringWithUTF8String:customPlateText];
+                  }
+              }];
+              
+              UIAlertAction *ok = [UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                  UITextField *tf = alert.textFields.firstObject;
+                  if (tf.text.length > 0) {
+                      strncpy(customPlateText, tf.text.UTF8String, 63);
+                      isCustomPlateEnabled = true;
+                      [self updateUIColors];
+                  }
+              }];
+              
+              UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"İptal / Temizle" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+                  isCustomPlateEnabled = false;
+                  [self updateUIColors];
+              }];
+              
+              [alert addAction:cancel];
+              [alert addAction:ok];
+              
+              UIViewController *rootVC = [UIApplication sharedApplication].keyWindow.rootViewController;
+              if (rootVC) {
+                  UIViewController *presented = rootVC.presentedViewController;
+                  if (presented) {
+                      [presented presentViewController:alert animated:YES completion:nil];
+                  } else {
+                      [rootVC presentViewController:alert animated:YES completion:nil];
+                  }
+              }
+          }
 
           - (void)updateUIColors {
               UIColor *colorOn = [UIColor colorWithRed:0.2 green:0.8 blue:0.2 alpha:1.0]; // Yesil
@@ -357,6 +419,14 @@ jobs:
               self.btnGhost.backgroundColor = (sizeMode == 2) ? colorOn : colorOff;
               self.btnBulldozer.backgroundColor = isBulldozerEnabled ? colorOn : colorOff;
               self.btnHover.backgroundColor = isHoverEnabled ? colorOn : colorOff;
+              
+              if (isCustomPlateEnabled) {
+                  self.btnCustomPlate.backgroundColor = colorOn;
+                  [self.btnCustomPlate setTitle:[NSString stringWithFormat:@"✅ Plaka: %s", customPlateText] forState:UIControlStateNormal];
+              } else {
+                  self.btnCustomPlate.backgroundColor = [UIColor colorWithRed:0.8 green:0.5 blue:0.1 alpha:1.0];
+                  [self.btnCustomPlate setTitle:@"📝 Plaka Yazısını Değiştir" forState:UIControlStateNormal];
+              }
           }
           @end
 
@@ -367,17 +437,20 @@ jobs:
                   
                   uintptr_t baseAddr = GetUnityFrameworkBase();
                   if (baseAddr != 0) {
-                      SetTimeScale = (void (*)(float))(baseAddr + 0x67523F8);
-                      get_position = (struct Vector3 (*)(void*))(baseAddr + 0x6819010);
-                      set_position = (void (*)(void*, struct Vector3))(baseAddr + 0x6819124);
-                      get_linearVelocity = (struct Vector3 (*)(void*))(baseAddr + 0x6817D68);
-                      set_linearVelocity = (void (*)(void*, struct Vector3))(baseAddr + 0x6817E7C);
+                      SetTimeScale = (void (*)(float, void*))(baseAddr + 0x67523F8);
+                      get_position = (struct Vector3 (*)(void*, void*))(baseAddr + 0x6819010);
+                      set_position = (void (*)(void*, struct Vector3, void*))(baseAddr + 0x6819124);
+                      get_linearVelocity = (struct Vector3 (*)(void*, void*))(baseAddr + 0x6817D68);
+                      set_linearVelocity = (void (*)(void*, struct Vector3, void*))(baseAddr + 0x6817E7C);
                       
-                      get_transform = (void* (*)(void*))(baseAddr + 0x673C9DC);
-                      set_localScale = (void (*)(void*, struct Vector3))(baseAddr + 0x6757F98);
-                      set_mass = (void (*)(void*, float))(baseAddr + 0x681869C);
+                      get_transform = (void* (*)(void*, void*))(baseAddr + 0x673C9DC);
+                      set_localScale = (void (*)(void*, struct Vector3, void*))(baseAddr + 0x6757F98);
+                      set_mass = (void (*)(void*, float, void*))(baseAddr + 0x681869C);
                       
                       MSHookFunction((void *)(baseAddr + 0x54B0B24), (void *)hooked_Move, (void **)&old_Move);
+                      
+                      // PlateTuner.Apply Hook
+                      MSHookFunction((void *)(baseAddr + 0x5F7B9BC), (void *)hooked_PlateApply, (void **)&old_PlateApply);
                   }
               });
           }
