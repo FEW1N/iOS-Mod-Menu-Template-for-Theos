@@ -768,9 +768,10 @@ jobs:
           export THEOS=~/theos
           make package clean
           make package FINALPACKAGE=1
+          mv packages/*.deb packages/FEW1NMod_16.0_${{ github.run_number }}.deb
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FEW1N-ModMenu-Tweak
+          name: FEW1N-ModMenu-Tweak-v16-${{ github.run_number }}
           path: packages/*.deb
