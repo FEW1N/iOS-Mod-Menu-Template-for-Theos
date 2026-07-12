@@ -59,7 +59,7 @@ jobs:
           EOF
 
           cat << 'EOF' > FEW1NMod.plist
-          { Filter = { Bundles = ( "com.TenebryFox.DreamRoadMultiplayer" ); }; }
+          { Filter = { Bundles = ( "com.TenebrssyFox.DreamRoadMultiplayer" ); }; }
           EOF
 
           cat > Tweak.xm << 'TWEAKEOF'
