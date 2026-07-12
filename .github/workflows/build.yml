@@ -34,9 +34,9 @@ jobs:
           Package: com.few1n.dreamroadmod
           Name: FEW1N Mod Menu
           Depends: mobilesubstrate
-          Version: 15.0
+          Version: 16.0
           Architecture: iphoneos-arm
-          Description: FEW1N Premium Mod Menu v15
+          Description: FEW1N Premium Mod Menu v16
           Maintainer: few1n
           Author: few1n
           Section: Tweaks
@@ -140,6 +140,7 @@ jobs:
           static void (*setScale)(void*,struct Vector3,void*);
           static void* (*chatGetInst)(void*);
           static void (*chatSend)(void*,void*,void*);
+          static void (*tmp_set_text)(void*,void*,void*);
 
           // ===== HOOK 1: set_timeScale =====
           static void (*o_setTimeScale)(float,void*);
@@ -257,9 +258,9 @@ jobs:
               if (isBypassPasswordEnabled) {
                   @try {
                       void* pwdInput = *(void**)((uintptr_t)self + 0x60);
-                      if (pwdInput) {
+                      if (pwdInput && tmp_set_text) {
                           void* empty = mkStr(@"");
-                          if (empty) *(void**)((uintptr_t)pwdInput + 0xC8) = empty;
+                          if (empty) tmp_set_text(pwdInput, empty, NULL);
                       }
                   } @catch (...) {}
               }
@@ -376,7 +377,7 @@ jobs:
               [header addSubview:titleLbl];
 
               UILabel *verLbl = [[UILabel alloc] initWithFrame:CGRectMake(16, 38, pw-80, 16)];
-              verLbl.text = [NSString stringWithFormat:@"v15.0 • Base: %p", (void*)global_base];
+              verLbl.text = [NSString stringWithFormat:@"v16.0 • Base: %p", (void*)global_base];
               verLbl.textColor = [UIColor colorWithWhite:1 alpha:0.6];
               verLbl.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
               [header addSubview:verLbl];
@@ -699,34 +700,46 @@ jobs:
 
           // ===== HOOK REGISTRATION =====
           static void OnImageAdded(const struct mach_header *mh, intptr_t slide) {
+              const char* fname = NULL;
               Dl_info info;
-              if (dladdr(mh, &info)) {
-                  if (strstr(info.dli_fname, "UnityFramework")) {
-                      uintptr_t b = (uintptr_t)mh;
-                      global_base = b;
-
-                      rb_getPos      = (struct Vector3(*)(void*,void*))(b+0x6819010);
-                      rb_setPos      = (void(*)(void*,struct Vector3,void*))(b+0x6819124);
-                      rb_getVel      = (struct Vector3(*)(void*,void*))(b+0x6817D68);
-                      rb_setVel      = (void(*)(void*,struct Vector3,void*))(b+0x6817E7C);
-                      rb_setMass     = (void(*)(void*,float,void*))(b+0x681869C);
-                      getTransform   = (void*(*)(void*,void*))(b+0x673C9DC);
-                      setScale       = (void(*)(void*,struct Vector3,void*))(b+0x6757F98);
-                      chatGetInst    = (void*(*)(void*))(b+0x319D630);
-                      chatSend       = (void(*)(void*,void*,void*))(b+0x319D734);
-
-                      // ===== TUM HOOKLAR =====
-                      MSHookFunction((void*)(b+0x67523F8), (void*)h_setTimeScale, (void**)&o_setTimeScale);
-                      MSHookFunction((void*)(b+0x59A77D8), (void*)h_rccp,         (void**)&o_rccp);
-                      MSHookFunction((void*)(b+0x5A12550), (void*)h_plateGen,     (void**)&o_plateGen);
-                      MSHookFunction((void*)(b+0x5A218F4), (void*)h_genRU,        (void**)&o_genRU);
-                      MSHookFunction((void*)(b+0x5A22100), (void*)h_genUS,        (void**)&o_genUS);
-                      MSHookFunction((void*)(b+0x5A22ADC), (void*)h_genEU,        (void**)&o_genEU);
-                      MSHookFunction((void*)(b+0x5F85AEC), (void*)h_plateText,    (void**)&o_plateText);
-                      MSHookFunction((void*)(b+0x319D734), (void*)h_chatSend,     (void**)&o_chatSend);
-                      MSHookFunction((void*)(b+0x5497790), (void*)h_roomConnect,  (void**)&o_roomConnect);
-                      MSHookFunction((void*)(b+0x548C5CC), (void*)h_enterPwd,     (void**)&o_enterPwd);
+              if (dladdr(mh, &info) && info.dli_fname) {
+                  fname = info.dli_fname;
+              } else {
+                  for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+                      if (_dyld_get_image_header(i) == mh) {
+                          fname = _dyld_get_image_name(i);
+                          break;
+                      }
                   }
+              }
+
+              if (fname && strstr(fname, "UnityFramework")) {
+                  uintptr_t b = (uintptr_t)mh;
+                  if (global_base != 0) return; // Prevent double hooking
+                  global_base = b;
+
+                  rb_getPos      = (struct Vector3(*)(void*,void*))(b+0x6819010);
+                  rb_setPos      = (void(*)(void*,struct Vector3,void*))(b+0x6819124);
+                  rb_getVel      = (struct Vector3(*)(void*,void*))(b+0x6817D68);
+                  rb_setVel      = (void(*)(void*,struct Vector3,void*))(b+0x6817E7C);
+                  rb_setMass     = (void(*)(void*,float,void*))(b+0x681869C);
+                  getTransform   = (void*(*)(void*,void*))(b+0x673C9DC);
+                  setScale       = (void(*)(void*,struct Vector3,void*))(b+0x6757F98);
+                  chatGetInst    = (void*(*)(void*))(b+0x319D630);
+                  chatSend       = (void(*)(void*,void*,void*))(b+0x319D734);
+                  tmp_set_text   = (void(*)(void*,void*,void*))(b+0x65D6B24);
+
+                  // ===== TUM HOOKLAR =====
+                  MSHookFunction((void*)(b+0x67523F8), (void*)h_setTimeScale, (void**)&o_setTimeScale);
+                  MSHookFunction((void*)(b+0x59A77D8), (void*)h_rccp,         (void**)&o_rccp);
+                  MSHookFunction((void*)(b+0x5A12550), (void*)h_plateGen,     (void**)&o_plateGen);
+                  MSHookFunction((void*)(b+0x5A218F4), (void*)h_genRU,        (void**)&o_genRU);
+                  MSHookFunction((void*)(b+0x5A22100), (void*)h_genUS,        (void**)&o_genUS);
+                  MSHookFunction((void*)(b+0x5A22ADC), (void*)h_genEU,        (void**)&o_genEU);
+                  MSHookFunction((void*)(b+0x5F85AEC), (void*)h_plateText,    (void**)&o_plateText);
+                  MSHookFunction((void*)(b+0x319D734), (void*)h_chatSend,     (void**)&o_chatSend);
+                  MSHookFunction((void*)(b+0x5497790), (void*)h_roomConnect,  (void**)&o_roomConnect);
+                  MSHookFunction((void*)(b+0x548C5CC), (void*)h_enterPwd,     (void**)&o_enterPwd);
               }
           }
 
