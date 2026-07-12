@@ -59,7 +59,7 @@ jobs:
           EOF
 
           cat << 'EOF' > FEW1NMod.plist
-          { Filter = { Bundles = ( "com.TenebrssyFox.DreamRoadMultiplayer" ); }; }
+          { Filter = { Bundles = ( "com.TenebryFox.DreamRoadMultiplayer", "com.TenebrssyFox.DreamRoadMultiplayer" ); }; }
           EOF
 
           cat > Tweak.xm << 'TWEAKEOF'
@@ -636,7 +636,17 @@ jobs:
               [g setTranslation:CGPointZero inView:v.superview];
           }
 
-          - (void)speedTap:(UIButton*)s { speedMode = (int)s.tag; [self refreshUI]; }
+          - (void)speedTap:(UIButton*)s {
+              speedMode = (int)s.tag;
+              [self refreshUI];
+              if (o_setTimeScale) {
+                  float v = 1.0f;
+                  if (speedMode == 2)  v = 2.5f;
+                  else if (speedMode == 5)  v = 5.0f;
+                  else if (speedMode == 10) v = 10.0f;
+                  o_setTimeScale(v, NULL);
+              }
+          }
           - (void)tapGodzilla  { sizeMode = (sizeMode==1)?0:1; [self refreshUI]; }
           - (void)tapGhost     { sizeMode = (sizeMode==2)?0:2; [self refreshUI]; }
           - (void)tapBulldozer { isBulldozerEnabled = !isBulldozerEnabled; [self refreshUI]; }
