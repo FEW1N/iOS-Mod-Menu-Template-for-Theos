@@ -115,16 +115,7 @@ jobs:
 
           // ===== IL2CPP HELPERS =====
           static void* (*cached_il2cpp_string_new)(const char*) = NULL;
-
-          static uintptr_t GetBase() {
-              for (uint32_t i = 0; i < _dyld_image_count(); i++) {
-                  const char *n = _dyld_get_image_name(i);
-                  if (n && strstr(n, "UnityFramework")) {
-                      return (uintptr_t)_dyld_get_image_header(i);
-                  }
-              }
-              return 0;
-          }
+          static uintptr_t global_base = 0;
 
           static void* mkStr(NSString* s) {
               if (!cached_il2cpp_string_new)
@@ -385,7 +376,7 @@ jobs:
               [header addSubview:titleLbl];
 
               UILabel *verLbl = [[UILabel alloc] initWithFrame:CGRectMake(16, 38, pw-80, 16)];
-              verLbl.text = @"v15.0 • Premium Edition";
+              verLbl.text = [NSString stringWithFormat:@"v15.0 • Base: %p", (void*)global_base];
               verLbl.textColor = [UIColor colorWithWhite:1 alpha:0.6];
               verLbl.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
               [header addSubview:verLbl];
@@ -706,32 +697,42 @@ jobs:
           }
           @end
 
+          // ===== HOOK REGISTRATION =====
+          static void OnImageAdded(const struct mach_header *mh, intptr_t slide) {
+              Dl_info info;
+              if (dladdr(mh, &info)) {
+                  if (strstr(info.dli_fname, "UnityFramework")) {
+                      uintptr_t b = (uintptr_t)mh;
+                      global_base = b;
+
+                      rb_getPos      = (struct Vector3(*)(void*,void*))(b+0x6819010);
+                      rb_setPos      = (void(*)(void*,struct Vector3,void*))(b+0x6819124);
+                      rb_getVel      = (struct Vector3(*)(void*,void*))(b+0x6817D68);
+                      rb_setVel      = (void(*)(void*,struct Vector3,void*))(b+0x6817E7C);
+                      rb_setMass     = (void(*)(void*,float,void*))(b+0x681869C);
+                      getTransform   = (void*(*)(void*,void*))(b+0x673C9DC);
+                      setScale       = (void(*)(void*,struct Vector3,void*))(b+0x6757F98);
+                      chatGetInst    = (void*(*)(void*))(b+0x319D630);
+                      chatSend       = (void(*)(void*,void*,void*))(b+0x319D734);
+
+                      // ===== TUM HOOKLAR =====
+                      MSHookFunction((void*)(b+0x67523F8), (void*)h_setTimeScale, (void**)&o_setTimeScale);
+                      MSHookFunction((void*)(b+0x59A77D8), (void*)h_rccp,         (void**)&o_rccp);
+                      MSHookFunction((void*)(b+0x5A12550), (void*)h_plateGen,     (void**)&o_plateGen);
+                      MSHookFunction((void*)(b+0x5A218F4), (void*)h_genRU,        (void**)&o_genRU);
+                      MSHookFunction((void*)(b+0x5A22100), (void*)h_genUS,        (void**)&o_genUS);
+                      MSHookFunction((void*)(b+0x5A22ADC), (void*)h_genEU,        (void**)&o_genEU);
+                      MSHookFunction((void*)(b+0x5F85AEC), (void*)h_plateText,    (void**)&o_plateText);
+                      MSHookFunction((void*)(b+0x319D734), (void*)h_chatSend,     (void**)&o_chatSend);
+                      MSHookFunction((void*)(b+0x5497790), (void*)h_roomConnect,  (void**)&o_roomConnect);
+                      MSHookFunction((void*)(b+0x548C5CC), (void*)h_enterPwd,     (void**)&o_enterPwd);
+                  }
+              }
+          }
+
           // ===== %ctor =====
           %ctor {
-              uintptr_t b = GetBase();
-              if (b) {
-                  rb_getPos      = (struct Vector3(*)(void*,void*))(b+0x6819010);
-                  rb_setPos      = (void(*)(void*,struct Vector3,void*))(b+0x6819124);
-                  rb_getVel      = (struct Vector3(*)(void*,void*))(b+0x6817D68);
-                  rb_setVel      = (void(*)(void*,struct Vector3,void*))(b+0x6817E7C);
-                  rb_setMass     = (void(*)(void*,float,void*))(b+0x681869C);
-                  getTransform   = (void*(*)(void*,void*))(b+0x673C9DC);
-                  setScale       = (void(*)(void*,struct Vector3,void*))(b+0x6757F98);
-                  chatGetInst    = (void*(*)(void*))(b+0x319D630);
-                  chatSend       = (void(*)(void*,void*,void*))(b+0x319D734);
-
-                  // ===== TUM HOOKLAR =====
-                  MSHookFunction((void*)(b+0x67523F8), (void*)h_setTimeScale, (void**)&o_setTimeScale);
-                  MSHookFunction((void*)(b+0x59A77D8), (void*)h_rccp,         (void**)&o_rccp);
-                  MSHookFunction((void*)(b+0x5A12550), (void*)h_plateGen,     (void**)&o_plateGen);
-                  MSHookFunction((void*)(b+0x5A218F4), (void*)h_genRU,        (void**)&o_genRU);
-                  MSHookFunction((void*)(b+0x5A22100), (void*)h_genUS,        (void**)&o_genUS);
-                  MSHookFunction((void*)(b+0x5A22ADC), (void*)h_genEU,        (void**)&o_genEU);
-                  MSHookFunction((void*)(b+0x5F85AEC), (void*)h_plateText,    (void**)&o_plateText);
-                  MSHookFunction((void*)(b+0x319D734), (void*)h_chatSend,     (void**)&o_chatSend);
-                  MSHookFunction((void*)(b+0x5497790), (void*)h_roomConnect,  (void**)&o_roomConnect);
-                  MSHookFunction((void*)(b+0x548C5CC), (void*)h_enterPwd,     (void**)&o_enterPwd);
-              }
+              _dyld_register_func_for_add_image(OnImageAdded);
 
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5*NSEC_PER_SEC), dispatch_get_main_queue(), ^{
                   [[FEW1NMenu shared] build];
