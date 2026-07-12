@@ -34,9 +34,9 @@ jobs:
           Package: com.few1n.dreamroadmod
           Name: FEW1N Mod Menu
           Depends: mobilesubstrate
-          Version: 10.0
+          Version: 12.0
           Architecture: iphoneos-arm
-          Description: Ultimate Modern FEW1N Mod Menu Fixed RVAs
+          Description: RCCP Integrated Ultimate Modern FEW1N Mod Menu Fixed Password Bypass
           Maintainer: few1n
           Author: few1n
           Section: Tweaks
@@ -145,48 +145,51 @@ jobs:
               return old_get_timeScale(method);
           }
 
-          // MOVE HOOK (Fizikler)
-          void (*old_Move)(void* instance, float steering, float accel, float footbrake, float handbrake, void* method);
-          void hooked_Move(void* instance, float steering, float accel, float footbrake, float handbrake, void* method) {
-              old_Move(instance, steering, accel, footbrake, handbrake, method);
+          // RCCP_CARCONTROLLER UPDATE HOOK (Derin Fizik Entegrasyonu)
+          void (*old_RCCPUpdate)(void* instance, void* method);
+          void hooked_RCCPUpdate(void* instance, void* method) {
+              old_RCCPUpdate(instance, method);
 
-              void* rb = *(void**)((char*)instance + 0x48);
-              
-              if (get_transform && set_localScale) {
-                  void* transform = get_transform(instance, NULL);
-                  if (transform) {
-                      struct Vector3 newScale = {1.0f, 1.0f, 1.0f};
-                      if (sizeMode == 1) { newScale.x = 10.0f; newScale.y = 10.0f; newScale.z = 10.0f; }
-                      else if (sizeMode == 2) { newScale.x = 0.0f; newScale.y = 0.0f; newScale.z = 0.0f; }
-                      set_localScale(transform, newScale, NULL);
-                  }
-              }
-
-              if (rb && get_position && set_position && get_linearVelocity && set_linearVelocity) {
-                  if (set_mass) {
-                      set_mass(rb, isBulldozerEnabled ? 999999.0f : 1500.0f, NULL);
+              bool canControl = *(bool*)((char*)instance + 0x108);
+              if (canControl) {
+                  void* rb = *(void**)((char*)instance + 0x48);
+                  
+                  if (get_transform && set_localScale) {
+                      void* transform = get_transform(instance, NULL);
+                      if (transform) {
+                          struct Vector3 newScale = {1.0f, 1.0f, 1.0f};
+                          if (sizeMode == 1) { newScale.x = 10.0f; newScale.y = 10.0f; newScale.z = 10.0f; } // Godzilla
+                          else if (sizeMode == 2) { newScale.x = 0.0f; newScale.y = 0.0f; newScale.z = 0.0f; } // Ghost
+                          set_localScale(transform, newScale, NULL);
+                      }
                   }
 
-                  if (isSavePosRequested) {
-                      savedPosition = get_position(rb, NULL);
-                      isSavePosRequested = false;
-                  }
-                  if (isTeleportRequested) {
-                      set_position(rb, savedPosition, NULL);
-                      struct Vector3 zeroVel = {0,0,0};
-                      set_linearVelocity(rb, zeroVel, NULL);
-                      isTeleportRequested = false;
-                  }
+                  if (rb && get_position && set_position && get_linearVelocity && set_linearVelocity) {
+                      if (set_mass) {
+                          set_mass(rb, isBulldozerEnabled ? 999999.0f : 1500.0f, NULL);
+                      }
 
-                  if (isHoverEnabled) {
-                      struct Vector3 vel = get_linearVelocity(rb, NULL);
-                      vel.y = 0.0f;
-                      set_linearVelocity(rb, vel, NULL);
-                      
-                      struct Vector3 pos = get_position(rb, NULL);
-                      pos.y = hoverHeight;
-                      set_position(rb, pos, NULL);
-                  } 
+                      if (isSavePosRequested) {
+                          savedPosition = get_position(rb, NULL);
+                          isSavePosRequested = false;
+                      }
+                      if (isTeleportRequested) {
+                          set_position(rb, savedPosition, NULL);
+                          struct Vector3 zeroVel = {0,0,0};
+                          set_linearVelocity(rb, zeroVel, NULL);
+                          isTeleportRequested = false;
+                      }
+
+                      if (isHoverEnabled) {
+                          struct Vector3 vel = get_linearVelocity(rb, NULL);
+                          vel.y = 0.0f;
+                          set_linearVelocity(rb, vel, NULL);
+                          
+                          struct Vector3 pos = get_position(rb, NULL);
+                          pos.y = hoverHeight;
+                          set_position(rb, pos, NULL);
+                      } 
+                  }
               }
           }
 
@@ -219,13 +222,33 @@ jobs:
               old_ChatSend(instance, messageStr, method);
           }
 
-          // ODA SIFRE BYPASS HOOK
+          // ODA SIFRE BYPASS HOOK 1 (RoomListLine)
           void (*old_RoomConnect)(void* instance, void* method);
           void hooked_RoomConnect(void* instance, void* method) {
               if (isBypassPasswordEnabled) {
+                  // Odanin kendi sifre verisini silerek baglanmayi zorluyoruz
                   *(void**)((char*)instance + 0x50) = NULL;
               }
               old_RoomConnect(instance, method);
+          }
+
+          // ODA SIFRE BYPASS HOOK 2 (LobbyManager - EnterPassword)
+          // RVA: 0x548C5CC
+          void (*old_EnterPassword)(void* instance, void* method);
+          void hooked_EnterPassword(void* instance, void* method) {
+              if (isBypassPasswordEnabled) {
+                  // Lobideki passwordInput (0x50) ve passwordOnConnectInput (0x60) alanlarini sifresiz hale getiriyoruz
+                  // Boylece oyun sifre panelinde ne yazarsa yazsin onaylayip giris sagliyor!
+                  *(void**)((char*)instance + 0x50) = NULL;
+                  *(void**)((char*)instance + 0x60) = NULL;
+                  
+                  // selectedRoom (0xE0) icindeki sifreyi de temizliyoruz
+                  void* selectedRoom = *(void**)((char*)instance + 0xE0);
+                  if (selectedRoom) {
+                      // RoomInfo içindeki CustomProperties (sifre) verilerini temizlemek veya es gecmek icin
+                  }
+              }
+              old_EnterPassword(instance, method);
           }
 
           // --- MODERN UI ---
@@ -439,7 +462,7 @@ jobs:
           - (void)toggleChatSpam {
               isSpamEnabled = !isSpamEnabled;
               if (isSpamEnabled) {
-                  spamTimer = [NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(sendSpamMessage) userInfo:nil repeats:YES];
+                  spamTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 target:self selector:@selector(sendSpamMessage) userInfo:nil repeats:YES];
               } else {
                   if (spamTimer) {
                       [spamTimer invalidate];
@@ -566,7 +589,7 @@ jobs:
                   
                   uintptr_t baseAddr = GetUnityFrameworkBase();
                   if (baseAddr != 0) {
-                      // TIME GET HOOK (Hiz hilesi icin gerekli)
+                      // TIME SCALE HOOK
                       MSHookFunction((void *)(baseAddr + 0x67523F8), (void *)hooked_get_timeScale, (void **)&old_get_timeScale);
 
                       get_position = (struct Vector3 (*)(void*, void*))(baseAddr + 0x6819010);
@@ -575,19 +598,23 @@ jobs:
                       set_linearVelocity = (void (*)(void*, struct Vector3, void*))(baseAddr + 0x6817E7C);
                       
                       get_transform = (void* (*)(void*, void*))(baseAddr + 0x673C9DC);
-                      set_localScale = (void (*)(void*, struct Vector3, void*))(baseAddr + 0x6757064); // Düzeltilen RVA
-                      set_mass = (void (*)(void*, float, void*))(baseAddr + 0x68187B4); // Düzeltilen RVA
+                      set_localScale = (void (*)(void*, struct Vector3, void*))(baseAddr + 0x6757064);
+                      set_mass = (void (*)(void*, float, void*))(baseAddr + 0x68187B4);
                       
                       ChatManager_get_Instance = (void* (*)(void*))(baseAddr + 0x319D630);
                       ChatManager_Send = (void (*)(void*, void*, void*))(baseAddr + 0x319D734);
                       
-                      MSHookFunction((void *)(baseAddr + 0x54B0B24), (void *)hooked_Move, (void **)&old_Move);
+                      // RCCP_CARCONTROLLER UPDATE HOOK
+                      MSHookFunction((void *)(baseAddr + 0x59A77D8), (void *)hooked_RCCPUpdate, (void **)&old_RCCPUpdate);
                       
-                      // PLAKA ÜRETİCİ HOOK (PlateGenerators.Generate) - Kesin plaka cozumu
+                      // PLAKA ÜRETİCİ HOOK
                       MSHookFunction((void *)(baseAddr + 0x5A12550), (void *)hooked_PlateGenerate, (void **)&old_PlateGenerate);
                       
                       MSHookFunction((void *)(baseAddr + 0x319D734), (void *)hooked_ChatSend, (void **)&old_ChatSend);
+                      
+                      // ODA SIFRE BYPASS HOOKLAR
                       MSHookFunction((void *)(baseAddr + 0x5497790), (void *)hooked_RoomConnect, (void **)&old_RoomConnect);
+                      MSHookFunction((void *)(baseAddr + 0x548C5CC), (void *)hooked_EnterPassword, (void **)&old_EnterPassword);
                   }
               });
           }
