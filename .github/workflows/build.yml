@@ -72,21 +72,10 @@ jobs:
           #include <dlfcn.h>
 
           // ============================================================
-          //  v17.0 STABLE - FULL FEATURE BUILD
-          //
-          //  IL2CPP CALLING CONVENTION:
-          //  - Instance: Ret Method(void* this, params..., void* method)
-          //  - Static:   Ret Method(void* this_NULL, params..., void* method)
-          //
-          //  DOGRULANMIS RVA TABLOSU (dump.cs)
+          //  v17.0 STABLE - FULL FEATURE STABLE BUILD
           // ============================================================
           // Time.set_timeScale(float)            [STATIC]   -> 0x67523F8
           // PhotonNetwork.set_NickName(string)   [STATIC]   -> 0x59161D0
-          // PlateGenerators.Generate(string)     [STATIC]   -> 0x5A12550
-          // PlateGenerators.GenerateRussian()    [STATIC]   -> 0x5A218F4
-          // PlateGenerators.GenerateUS()         [STATIC]   -> 0x5A22100
-          // PlateGenerators.GenerateEU()         [STATIC]   -> 0x5A22ADC
-          // PlateTuner.get_plateText()           [INSTANCE] -> 0x5F85AEC
           // ChatManager.get_Instance()           [STATIC]   -> 0x319D630
           // ChatManager.Send(string)             [INSTANCE] -> 0x319D734
           // HR_UI_RoomListLine.Connect()         [INSTANCE] -> 0x5497790
@@ -94,15 +83,14 @@ jobs:
           // TMP_InputField.set_text(string)      [INSTANCE] -> 0x65D6B24
           // RCCP_CarController.Update()          [INSTANCE] -> 0x59A77D8
           // CarNitro.get_nitroAmount()           [INSTANCE] -> 0x54B3E98
-          // ============================================================
-          //  RCCP_CarController FIELD OFFSETS:
-          //    _engine (RCCP_Engine*)  -> 0x58
-          //    maximumSpeed (float)    -> 0x138
-          //  RCCP_Engine FIELD OFFSETS:
-          //    maxTorqueAtRPM (float)  -> 0x5C
-          //    maximumTorqueAsNM (float) -> 0x94
-          //  CarNitro FIELD OFFSETS:
-          //    nitroAmount (float)     -> 0x34
+          // CarNitro.set_nitroAmount(float)      [INSTANCE] -> 0x54B3EA0
+          // PlateVariant.Change(PlateHolder)     [INSTANCE] -> 0x5F79DA8
+          // PlayerManager.get_Instance()         [STATIC]   -> 0x5A108F8
+          // PlayerManager.UpdateNicknameInternal()[INSTANCE]-> 0x5A20850
+          // HR_PhotonLobbyManager.get_Instance() [STATIC]   -> 0x548C0D0
+          // PhotonNetwork.CloseConnection()      [STATIC]   -> 0x591B0D4
+          // PhotonNetwork.set_SendRate(int)      [STATIC]   -> 0x5916E6C
+          // PhotonNetwork.set_SerializationRate(int)[STATIC]-> 0x5916FCC
           // ============================================================
 
           // ===== STATE =====
@@ -137,163 +125,157 @@ jobs:
           }
 
           // ===== FUNCTION POINTERS =====
-          static void* (*chatGetInst)(void*, void*);
-          static void (*chatSend)(void*, void*, void*);
-          static void (*tmp_set_text)(void*, void*, void*);
-          static void (*pn_setNickName)(void*, void*, void*);
+          static void* (*chatGetInst)();
+          static void (*chatSend)(void* self, void* msg);
+          static void (*tmp_set_text)(void* self, void* msg);
+          static void (*pn_setNickName)(void* name);
+          static void* (*lobbyGetInst)();
+          static void* (*playerManagerGetInst)();
+          static void (*pm_updateNicknameInternal)(void* self, void* newName);
+          static void (*pn_setSendRate)(int value);
+          static void (*pn_setSerializationRate)(int value);
 
           // ================================================================
           //  HOOK 1: Time.set_timeScale  [STATIC]
           // ================================================================
-          static void (*o_setTimeScale)(void*, float, void*);
-          static void h_setTimeScale(void* __this, float v, void* m) {
+          static void (*o_setTimeScale)(float);
+          static void h_setTimeScale(float v) {
               if (speedMode == 2)  v = 2.5f;
               else if (speedMode == 5)  v = 5.0f;
               else if (speedMode == 10) v = 10.0f;
-              o_setTimeScale(__this, v, m);
+              o_setTimeScale(v);
+
+              // Hız hilesi açıkken sunucuya giden paket sıklığını düşürerek sunucunun algılamasını engelle
+              @try {
+                  if (pn_setSendRate && pn_setSerializationRate) {
+                      if (speedMode > 1) {
+                          pn_setSendRate(5); // Paket sıklığını azalt
+                          pn_setSerializationRate(3);
+                      } else {
+                          pn_setSendRate(20); // Orijinal değerler
+                          pn_setSerializationRate(10);
+                      }
+                  }
+              } @catch (...) {}
+          }
+
+          // ================================================================
+          //  HOOK 1b: PhotonNetwork.CloseConnection()  [STATIC]
+          //  Sunucunun bizi odadan atma çağrılarını tamamen engeller
+          // ================================================================
+          static bool (*o_closeConnection)(void*);
+          static bool h_closeConnection(void* kickPlayer) {
+              // Bağlantının kesilmesine izin verme
+              return false;
           }
 
           // ================================================================
           //  HOOK 2: RCCP_CarController.Update()  [INSTANCE]
-          //  Motor gucu + maks hiz burada uygulanir
           // ================================================================
-          static void (*o_rccp)(void*, void*);
-          static void h_rccp(void* self, void* m) {
-              o_rccp(self, m);
+          static void (*o_rccp)(void*);
+          static void h_rccp(void* self) {
+              o_rccp(self);
               @try {
-                  // Engine Power Boost
+                  // Engine Power Boost (Tork)
                   if (isEnginePowerEnabled) {
-                      void* engine = *(void**)((uintptr_t)self + 0x58);
+                      void* engine = *(void**)((uintptr_t)self + 0x58); // _engine (RCCP_Engine)
                       if (engine) {
                           *(float*)((uintptr_t)engine + 0x5C) = 9999.0f;   // maxTorqueAtRPM
                           *(float*)((uintptr_t)engine + 0x94) = 9999.0f;   // maximumTorqueAsNM
+                          *(bool*)((uintptr_t)engine + 0x98) = false;      // useCuveForMaxTorque (egri devre disi - dogrudan tork)
+                          *(float*)((uintptr_t)engine + 0xE0) = 999.0f;    // maxSpeed (motordaki limit)
                       }
                   }
-                  // Max Speed Override
+                  // Max Speed Override (Hiz Limiti)
                   if (isMaxSpeedEnabled) {
-                      *(float*)((uintptr_t)self + 0x138) = 999.0f;         // maximumSpeed
+                      *(float*)((uintptr_t)self + 0x138) = 999.0f;         // maximumSpeed (car controller limiti)
                   }
               } @catch (...) {}
           }
 
           // ================================================================
           //  HOOK 3: CarNitro.get_nitroAmount()  [INSTANCE]
-          //  Sonsuz nitro: her zaman 1.0 dondur
           // ================================================================
-          static float (*o_getNitro)(void*, void*);
-          static float h_getNitro(void* self, void* m) {
+          static float (*o_getNitro)(void*);
+          static float h_getNitro(void* self) {
               if (isInfiniteNitroEnabled) return 1.0f;
-              return o_getNitro(self, m);
+              return o_getNitro(self);
           }
 
           // ================================================================
-          //  HOOK 4: PlateGenerators.Generate(string)  [STATIC]
+          //  HOOK 3b: CarNitro.set_nitroAmount(float)  [INSTANCE]
           // ================================================================
-          static void* (*o_plateGen)(void*, void*, void*);
-          static void* h_plateGen(void* __this, void* country, void* m) {
+          static void (*o_setNitro)(void*, float);
+          static void h_setNitro(void* self, float value) {
+              if (isInfiniteNitroEnabled) {
+                  value = 1.0f;
+              }
+              o_setNitro(self, value);
+          }
+
+          // ================================================================
+          //  HOOK 4: PlateVariant.Change()  [INSTANCE]
+          // ================================================================
+          static void (*o_plateVariantChange)(void*, void*, void*);
+          static void h_plateVariantChange(void* self, void* holder_c, void* holder_t) {
               if (isCustomPlateEnabled && customPlateText[0]) {
                   void* r = mkStr([NSString stringWithUTF8String:customPlateText]);
-                  if (r) return r;
+                  if (r) {
+                      holder_t = r; // Yeni plaka yazisini zorla yerlestir
+                  }
               }
-              return o_plateGen(__this, country, m);
+              o_plateVariantChange(self, holder_c, holder_t);
           }
 
           // ================================================================
-          //  HOOK 5: PlateGenerators.GenerateRussian()  [STATIC]
+          //  HOOK 5: ChatManager.Send(string)  [INSTANCE]
           // ================================================================
-          static void* (*o_genRU)(void*, void*);
-          static void* h_genRU(void* __this, void* m) {
-              if (isCustomPlateEnabled && customPlateText[0]) {
-                  void* r = mkStr([NSString stringWithUTF8String:customPlateText]);
-                  if (r) return r;
-              }
-              return o_genRU(__this, m);
-          }
-
-          // ================================================================
-          //  HOOK 6: PlateGenerators.GenerateUS()  [STATIC]
-          // ================================================================
-          static void* (*o_genUS)(void*, void*);
-          static void* h_genUS(void* __this, void* m) {
-              if (isCustomPlateEnabled && customPlateText[0]) {
-                  void* r = mkStr([NSString stringWithUTF8String:customPlateText]);
-                  if (r) return r;
-              }
-              return o_genUS(__this, m);
-          }
-
-          // ================================================================
-          //  HOOK 7: PlateGenerators.GenerateEU()  [STATIC]
-          // ================================================================
-          static void* (*o_genEU)(void*, void*);
-          static void* h_genEU(void* __this, void* m) {
-              if (isCustomPlateEnabled && customPlateText[0]) {
-                  void* r = mkStr([NSString stringWithUTF8String:customPlateText]);
-                  if (r) return r;
-              }
-              return o_genEU(__this, m);
-          }
-
-          // ================================================================
-          //  HOOK 8: PlateTuner.get_plateText()  [INSTANCE]
-          // ================================================================
-          static void* (*o_plateText)(void*, void*);
-          static void* h_plateText(void* self, void* m) {
-              if (isCustomPlateEnabled && customPlateText[0]) {
-                  void* r = mkStr([NSString stringWithUTF8String:customPlateText]);
-                  if (r) return r;
-              }
-              return o_plateText(self, m);
-          }
-
-          // ================================================================
-          //  HOOK 9: ChatManager.Send(string)  [INSTANCE]
-          // ================================================================
-          static void (*o_chatSend)(void*, void*, void*);
-          static void h_chatSend(void* self, void* msg, void* m) {
+          static void (*o_chatSend)(void*, void*);
+          static void h_chatSend(void* self, void* msg) {
               if (isColorChatEnabled && msg) {
                   NSString *orig = readStr(msg);
                   if (orig.length > 0) {
                       void* colored = mkStr([NSString stringWithFormat:@"<color=cyan><b>[FEW1N]</b></color> %@", orig]);
-                      if (colored) { o_chatSend(self, colored, m); return; }
+                      if (colored) { o_chatSend(self, colored); return; }
                   }
               }
-              o_chatSend(self, msg, m);
+              o_chatSend(self, msg);
           }
 
           // ================================================================
-          //  HOOK 10: HR_UI_RoomListLine.Connect()  [INSTANCE]
+          //  HOOK 6: HR_UI_RoomListLine.Connect()  [INSTANCE]
           // ================================================================
-          static void (*o_roomConnect)(void*, void*);
-          static void h_roomConnect(void* self, void* m) {
+          static void (*o_roomConnect)(void*);
+          static void h_roomConnect(void* self) {
               if (isBypassPasswordEnabled) {
                   @try {
-                      void* empty = mkStr(@"");
-                      if (empty) *(void**)((uintptr_t)self + 0x50) = empty;
-                  } @catch (...) {}
-              }
-              o_roomConnect(self, m);
-          }
-
-          // ================================================================
-          //  HOOK 11: HR_PhotonLobbyManager.EnterPassword()  [INSTANCE]
-          // ================================================================
-          static void (*o_enterPwd)(void*, void*);
-          static void h_enterPwd(void* self, void* m) {
-              if (isBypassPasswordEnabled) {
-                  @try {
-                      void* pwdInput = *(void**)((uintptr_t)self + 0x60);
-                      if (pwdInput && tmp_set_text) {
-                          void* empty = mkStr(@"");
-                          if (empty) tmp_set_text(pwdInput, empty, NULL);
+                      void* roomPwd = *(void**)((uintptr_t)self + 0x50); // room password
+                      void* lobbyMgr = lobbyGetInst();
+                      if (lobbyMgr && roomPwd) {
+                          void* pwdInputOnConnect = *(void**)((uintptr_t)lobbyMgr + 0x60);
+                          if (pwdInputOnConnect && tmp_set_text) {
+                              tmp_set_text(pwdInputOnConnect, roomPwd);
+                          }
+                          void* pwdInput = *(void**)((uintptr_t)lobbyMgr + 0x50);
+                          if (pwdInput && tmp_set_text) {
+                              tmp_set_text(pwdInput, roomPwd);
+                          }
                       }
                   } @catch (...) {}
               }
-              o_enterPwd(self, m);
+              o_roomConnect(self);
+          }
+
+          // ================================================================
+          //  HOOK 7: HR_PhotonLobbyManager.EnterPassword()  [INSTANCE]
+          // ================================================================
+          static void (*o_enterPwd)(void*);
+          static void h_enterPwd(void* self) {
+              o_enterPwd(self);
           }
 
           // =============================================================
-          //  CYBER-GLASS PREMIUM MOD MENU UI  v17
+          //  CYBER-GLASS PREMIUM MOD MENU UI
           // =============================================================
 
           #define C_BG     [UIColor colorWithRed:0.04 green:0.06 blue:0.10 alpha:0.65]
@@ -653,7 +635,7 @@ jobs:
               if (speedMode == 2) v = 2.5f;
               else if (speedMode == 5) v = 5.0f;
               else if (speedMode == 10) v = 10.0f;
-              o_setTimeScale(NULL, v, NULL);
+              o_setTimeScale(v);
           }
           - (void)speedTap:(UIButton*)s {
               speedMode = (int)s.tag;
@@ -676,10 +658,10 @@ jobs:
           - (void)fireSpam {
               if (!chatGetInst || !chatSend) return;
               @try {
-                  void* mgr = chatGetInst(NULL, NULL);
+                  void* mgr = chatGetInst();
                   if (!mgr) return;
                   void* s = mkStr([NSString stringWithUTF8String:chatSpamText]);
-                  if (s) chatSend(mgr, s, NULL);
+                  if (s) chatSend(mgr, s);
               } @catch (...) {}
           }
 
@@ -691,7 +673,13 @@ jobs:
                   if (name.length > 0 && pn_setNickName) {
                       void* nameStr = mkStr(name);
                       if (nameStr) {
-                          pn_setNickName(NULL, nameStr, NULL);
+                          pn_setNickName(nameStr);
+                          if (playerManagerGetInst && pm_updateNicknameInternal) {
+                              void* pm = playerManagerGetInst();
+                              if (pm) {
+                                  pm_updateNicknameInternal(pm, nameStr);
+                              }
+                          }
                           [self.nameBtn setTitle:[NSString stringWithFormat:@"\U0001F4DB  Isim: %@ \u2705", name] forState:UIControlStateNormal];
                           [self.nameBtn setTitleColor:C_ON forState:UIControlStateNormal];
                       }
@@ -737,54 +725,57 @@ jobs:
           @end
 
           // =============================================================
-          //  HOOK REGISTRATION
+          //  ASLR slide ve Framework tespiti
           // =============================================================
-          static void OnImageAdded(const struct mach_header *mh, intptr_t slide) {
-              const char* fname = NULL;
-              Dl_info info;
-              if (dladdr(mh, &info) && info.dli_fname) fname = info.dli_fname;
-              else {
-                  for (uint32_t i = 0; i < _dyld_image_count(); i++) {
-                      if (_dyld_get_image_header(i) == mh) { fname = _dyld_get_image_name(i); break; }
+          uintptr_t GetUnityFrameworkBase() {
+              for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+                  const char *image_name = _dyld_get_image_name(i);
+                  if (image_name && strstr(image_name, "UnityFramework")) {
+                      return _dyld_get_image_vmaddr_slide(i);
                   }
               }
-              if (!fname || !strstr(fname, "UnityFramework")) return;
-
-              uintptr_t b = (uintptr_t)mh;
-              if (global_base != 0) return;
-              global_base = b;
-
-              // Function pointers
-              chatGetInst    = (void*(*)(void*,void*))(b+0x319D630);
-              chatSend       = (void(*)(void*,void*,void*))(b+0x319D734);
-              tmp_set_text   = (void(*)(void*,void*,void*))(b+0x65D6B24);
-              pn_setNickName = (void(*)(void*,void*,void*))(b+0x59161D0);
-
-              // === ALL HOOKS ===
-              // 1. Time.set_timeScale [STATIC]
-              MSHookFunction((void*)(b+0x67523F8), (void*)h_setTimeScale, (void**)&o_setTimeScale);
-              // 2. RCCP_CarController.Update [INSTANCE] - motor gucu + maks hiz
-              MSHookFunction((void*)(b+0x59A77D8), (void*)h_rccp, (void**)&o_rccp);
-              // 3. CarNitro.get_nitroAmount [INSTANCE] - sonsuz nitro
-              MSHookFunction((void*)(b+0x54B3E98), (void*)h_getNitro, (void**)&o_getNitro);
-              // 4-6. PlateGenerators [STATIC]
-              MSHookFunction((void*)(b+0x5A12550), (void*)h_plateGen, (void**)&o_plateGen);
-              MSHookFunction((void*)(b+0x5A218F4), (void*)h_genRU, (void**)&o_genRU);
-              MSHookFunction((void*)(b+0x5A22100), (void*)h_genUS, (void**)&o_genUS);
-              MSHookFunction((void*)(b+0x5A22ADC), (void*)h_genEU, (void**)&o_genEU);
-              // 7. PlateTuner.get_plateText [INSTANCE]
-              MSHookFunction((void*)(b+0x5F85AEC), (void*)h_plateText, (void**)&o_plateText);
-              // 8. ChatManager.Send [INSTANCE]
-              MSHookFunction((void*)(b+0x319D734), (void*)h_chatSend, (void**)&o_chatSend);
-              // 9. HR_UI_RoomListLine.Connect [INSTANCE]
-              MSHookFunction((void*)(b+0x5497790), (void*)h_roomConnect, (void**)&o_roomConnect);
-              // 10. HR_PhotonLobbyManager.EnterPassword [INSTANCE]
-              MSHookFunction((void*)(b+0x548C5CC), (void*)h_enterPwd, (void**)&o_enterPwd);
+              return 0;
           }
 
           %ctor {
-              _dyld_register_func_for_add_image(OnImageAdded);
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5*NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+              // Gecikmeli kanca atma: Uygulama tam yuklendikten 35 saniye sonra hooklari uygular.
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 35 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                  uintptr_t b = GetUnityFrameworkBase();
+                  if (b != 0) {
+                      global_base = b;
+
+                      // Function pointers
+                      chatGetInst    = (void*(*)())(b+0x319D630);
+                      chatSend       = (void(*)(void*,void*))(b+0x319D734);
+                      tmp_set_text   = (void(*)(void*,void*))(b+0x65D6B24);
+                      pn_setNickName = (void(*)(void*))(b+0x59161D0);
+                      lobbyGetInst   = (void*(*)())(b+0x548C0D0);
+                      playerManagerGetInst = (void*(*)())(b+0x5A108F8);
+                      pm_updateNicknameInternal = (void(*)(void*,void*))(b+0x5A20850);
+                      pn_setSendRate = (void(*)(int))(b+0x5916E6C);
+                      pn_setSerializationRate = (void(*)(int))(b+0x5916FCC);
+
+                      // === ALL HOOKS ===
+                      // 1. Time.set_timeScale [STATIC]
+                      MSHookFunction((void*)(b+0x67523F8), (void*)h_setTimeScale, (void**)&o_setTimeScale);
+                      // 1b. PhotonNetwork.CloseConnection [STATIC]
+                      MSHookFunction((void*)(b+0x591B0D4), (void*)h_closeConnection, (void**)&o_closeConnection);
+                      // 2. RCCP_CarController.Update [INSTANCE]
+                      MSHookFunction((void*)(b+0x59A77D8), (void*)h_rccp, (void**)&o_rccp);
+                      // 3. CarNitro.get_nitroAmount [INSTANCE]
+                      MSHookFunction((void*)(b+0x54B3E98), (void*)h_getNitro, (void**)&o_getNitro);
+                      // 3b. CarNitro.set_nitroAmount [INSTANCE]
+                      MSHookFunction((void*)(b+0x54B3EA0), (void*)h_setNitro, (void**)&o_setNitro);
+                      // 4. PlateVariant.Change [INSTANCE]
+                      MSHookFunction((void*)(b+0x5F79DA8), (void*)h_plateVariantChange, (void**)&o_plateVariantChange);
+                      // 5. ChatManager.Send [INSTANCE]
+                      MSHookFunction((void*)(b+0x319D734), (void*)h_chatSend, (void**)&o_chatSend);
+                      // 6. HR_UI_RoomListLine.Connect [INSTANCE]
+                      MSHookFunction((void*)(b+0x5497790), (void*)h_roomConnect, (void**)&o_roomConnect);
+                      // 7. HR_PhotonLobbyManager.EnterPassword [INSTANCE]
+                      MSHookFunction((void*)(b+0x548C5CC), (void*)h_enterPwd, (void**)&o_enterPwd);
+                  }
+
                   [[FEW1NMenu shared] build];
               });
           }
