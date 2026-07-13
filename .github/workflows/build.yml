@@ -1,4 +1,3 @@
-
 name: Build iOS Mod Menu
 
 on:
@@ -35,9 +34,9 @@ jobs:
           Package: com.few1n.dreamroadmod
           Name: FEW1N Mod Menu
           Depends: mobilesubstrate
-          Version: 16.0
+          Version: 17.0
           Architecture: iphoneos-arm
-          Description: FEW1N Premium Mod Menu v16
+          Description: FEW1N Premium Mod Menu v17
           Maintainer: few1n
           Author: few1n
           Section: Tweaks
@@ -73,46 +72,52 @@ jobs:
           #include <dlfcn.h>
 
           // ============================================================
-          //  DOGRULANMIS RVA TABLOSU
+          //  v17.0 STABLE - FULL FEATURE BUILD
+          //
+          //  IL2CPP CALLING CONVENTION:
+          //  - Instance: Ret Method(void* this, params..., void* method)
+          //  - Static:   Ret Method(void* this_NULL, params..., void* method)
+          //
+          //  DOGRULANMIS RVA TABLOSU (dump.cs)
           // ============================================================
-          // Time.set_timeScale(float)                 -> 0x67523F8
-          // Rigidbody.get_position()                  -> 0x6819010
-          // Rigidbody.set_position(Vector3)            -> 0x6819124
-          // Rigidbody.get_linearVelocity()            -> 0x6817D68
-          // Rigidbody.set_linearVelocity(Vector3)     -> 0x6817E7C
-          // Rigidbody.set_mass(float)                 -> 0x681869C
-          // Component.get_transform()                 -> 0x673C9DC
-          // Transform.set_localScale(Vector3)         -> 0x6757F98
-          // RCCP_CarController.Update()               -> 0x59A77D8
-          // PlateGenerators.Generate(string)          -> 0x5A12550
-          // PlateGenerators.GenerateRussian()          -> 0x5A218F4
-          // PlateGenerators.GenerateUS()               -> 0x5A22100
-          // PlateGenerators.GenerateEU()               -> 0x5A22ADC
-          // PlateTuner.get_plateText()                -> 0x5F85AEC
-          // ChatManager.get_Instance()                -> 0x319D630
-          // ChatManager.Send(string)                  -> 0x319D734
-          // HR_UI_RoomListLine.Connect()              -> 0x5497790
-          // HR_PhotonLobbyManager.EnterPassword()     -> 0x548C5CC
+          // Time.set_timeScale(float)            [STATIC]   -> 0x67523F8
+          // PhotonNetwork.set_NickName(string)   [STATIC]   -> 0x59161D0
+          // PlateGenerators.Generate(string)     [STATIC]   -> 0x5A12550
+          // PlateGenerators.GenerateRussian()    [STATIC]   -> 0x5A218F4
+          // PlateGenerators.GenerateUS()         [STATIC]   -> 0x5A22100
+          // PlateGenerators.GenerateEU()         [STATIC]   -> 0x5A22ADC
+          // PlateTuner.get_plateText()           [INSTANCE] -> 0x5F85AEC
+          // ChatManager.get_Instance()           [STATIC]   -> 0x319D630
+          // ChatManager.Send(string)             [INSTANCE] -> 0x319D734
+          // HR_UI_RoomListLine.Connect()         [INSTANCE] -> 0x5497790
+          // HR_PhotonLobbyManager.EnterPassword()[INSTANCE] -> 0x548C5CC
+          // TMP_InputField.set_text(string)      [INSTANCE] -> 0x65D6B24
+          // RCCP_CarController.Update()          [INSTANCE] -> 0x59A77D8
+          // CarNitro.get_nitroAmount()           [INSTANCE] -> 0x54B3E98
           // ============================================================
-
-          struct Vector3 { float x, y, z; };
+          //  RCCP_CarController FIELD OFFSETS:
+          //    _engine (RCCP_Engine*)  -> 0x58
+          //    maximumSpeed (float)    -> 0x138
+          //  RCCP_Engine FIELD OFFSETS:
+          //    maxTorqueAtRPM (float)  -> 0x5C
+          //    maximumTorqueAsNM (float) -> 0x94
+          //  CarNitro FIELD OFFSETS:
+          //    nitroAmount (float)     -> 0x34
+          // ============================================================
 
           // ===== STATE =====
           static int speedMode = 1;
-          static bool isHoverEnabled = false;
-          static float hoverHeight = 5.0f;
-          static int sizeMode = 0;
-          static bool isBulldozerEnabled = false;
-          static bool isSavePosRequested = false;
-          static bool isTeleportRequested = false;
-          static struct Vector3 savedPosition = {0,0,0};
           static bool isCustomPlateEnabled = false;
           static char customPlateText[64] = "FEW1N";
           static bool isColorChatEnabled = false;
           static bool isSpamEnabled = false;
           static char chatSpamText[128] = "FEW1N MOD MENU!";
           static NSTimer *spamTimer = nil;
+          static NSTimer *speedEnforceTimer = nil;
           static bool isBypassPasswordEnabled = true;
+          static bool isEnginePowerEnabled = false;
+          static bool isMaxSpeedEnabled = false;
+          static bool isInfiniteNitroEnabled = false;
 
           // ===== IL2CPP HELPERS =====
           static void* (*cached_il2cpp_string_new)(const char*) = NULL;
@@ -132,96 +137,107 @@ jobs:
           }
 
           // ===== FUNCTION POINTERS =====
-          static struct Vector3 (*rb_getPos)(void*,void*);
-          static void (*rb_setPos)(void*,struct Vector3,void*);
-          static struct Vector3 (*rb_getVel)(void*,void*);
-          static void (*rb_setVel)(void*,struct Vector3,void*);
-          static void (*rb_setMass)(void*,float,void*);
-          static void* (*getTransform)(void*,void*);
-          static void (*setScale)(void*,struct Vector3,void*);
-          static void* (*chatGetInst)(void*);
-          static void (*chatSend)(void*,void*,void*);
-          static void (*tmp_set_text)(void*,void*,void*);
+          static void* (*chatGetInst)(void*, void*);
+          static void (*chatSend)(void*, void*, void*);
+          static void (*tmp_set_text)(void*, void*, void*);
+          static void (*pn_setNickName)(void*, void*, void*);
 
-          // ===== HOOK 1: set_timeScale =====
-          static void (*o_setTimeScale)(float,void*);
-          static void h_setTimeScale(float v, void* m) {
+          // ================================================================
+          //  HOOK 1: Time.set_timeScale  [STATIC]
+          // ================================================================
+          static void (*o_setTimeScale)(void*, float, void*);
+          static void h_setTimeScale(void* __this, float v, void* m) {
               if (speedMode == 2)  v = 2.5f;
               else if (speedMode == 5)  v = 5.0f;
               else if (speedMode == 10) v = 10.0f;
-              o_setTimeScale(v, m);
+              o_setTimeScale(__this, v, m);
           }
 
-          // ===== HOOK 2: RCCP Update =====
-          static void (*o_rccp)(void*,void*);
+          // ================================================================
+          //  HOOK 2: RCCP_CarController.Update()  [INSTANCE]
+          //  Motor gucu + maks hiz burada uygulanir
+          // ================================================================
+          static void (*o_rccp)(void*, void*);
           static void h_rccp(void* self, void* m) {
               o_rccp(self, m);
               @try {
-                  if (!*(bool*)((uintptr_t)self + 0x108)) return;
-                  void* rb = *(void**)((uintptr_t)self + 0x48);
-                  if (!rb) return;
-
-                  if (sizeMode != 0 && getTransform && setScale) {
-                      void* tf = getTransform(self, NULL);
-                      if (tf) {
-                          struct Vector3 sc = (sizeMode==1) ?
-                              (struct Vector3){10,10,10} : (struct Vector3){0.01f,0.01f,0.01f};
-                          setScale(tf, sc, NULL);
+                  // Engine Power Boost
+                  if (isEnginePowerEnabled) {
+                      void* engine = *(void**)((uintptr_t)self + 0x58);
+                      if (engine) {
+                          *(float*)((uintptr_t)engine + 0x5C) = 9999.0f;   // maxTorqueAtRPM
+                          *(float*)((uintptr_t)engine + 0x94) = 9999.0f;   // maximumTorqueAsNM
                       }
                   }
-                  if (isBulldozerEnabled && rb_setMass) rb_setMass(rb, 999999.0f, NULL);
-                  if (isSavePosRequested && rb_getPos) {
-                      savedPosition = rb_getPos(rb, NULL);
-                      isSavePosRequested = false;
-                  }
-                  if (isTeleportRequested && rb_setPos && rb_setVel) {
-                      rb_setPos(rb, savedPosition, NULL);
-                      rb_setVel(rb, (struct Vector3){0,0,0}, NULL);
-                      isTeleportRequested = false;
-                  }
-                  if (isHoverEnabled && rb_getPos && rb_setPos && rb_getVel && rb_setVel) {
-                      struct Vector3 vel = rb_getVel(rb, NULL);
-                      vel.y = 0; rb_setVel(rb, vel, NULL);
-                      struct Vector3 pos = rb_getPos(rb, NULL);
-                      pos.y = hoverHeight; rb_setPos(rb, pos, NULL);
+                  // Max Speed Override
+                  if (isMaxSpeedEnabled) {
+                      *(float*)((uintptr_t)self + 0x138) = 999.0f;         // maximumSpeed
                   }
               } @catch (...) {}
           }
 
-          // ===== HOOK 3: Plate hooks (ALL static - no this) =====
-          static void* (*o_plateGen)(void*,void*);
-          static void* h_plateGen(void* country, void* m) {
+          // ================================================================
+          //  HOOK 3: CarNitro.get_nitroAmount()  [INSTANCE]
+          //  Sonsuz nitro: her zaman 1.0 dondur
+          // ================================================================
+          static float (*o_getNitro)(void*, void*);
+          static float h_getNitro(void* self, void* m) {
+              if (isInfiniteNitroEnabled) return 1.0f;
+              return o_getNitro(self, m);
+          }
+
+          // ================================================================
+          //  HOOK 4: PlateGenerators.Generate(string)  [STATIC]
+          // ================================================================
+          static void* (*o_plateGen)(void*, void*, void*);
+          static void* h_plateGen(void* __this, void* country, void* m) {
               if (isCustomPlateEnabled && customPlateText[0]) {
                   void* r = mkStr([NSString stringWithUTF8String:customPlateText]);
                   if (r) return r;
               }
-              return o_plateGen(country, m);
+              return o_plateGen(__this, country, m);
           }
-          static void* (*o_genRU)(void*);
-          static void* h_genRU(void* m) {
+
+          // ================================================================
+          //  HOOK 5: PlateGenerators.GenerateRussian()  [STATIC]
+          // ================================================================
+          static void* (*o_genRU)(void*, void*);
+          static void* h_genRU(void* __this, void* m) {
               if (isCustomPlateEnabled && customPlateText[0]) {
                   void* r = mkStr([NSString stringWithUTF8String:customPlateText]);
                   if (r) return r;
               }
-              return o_genRU(m);
+              return o_genRU(__this, m);
           }
-          static void* (*o_genUS)(void*);
-          static void* h_genUS(void* m) {
+
+          // ================================================================
+          //  HOOK 6: PlateGenerators.GenerateUS()  [STATIC]
+          // ================================================================
+          static void* (*o_genUS)(void*, void*);
+          static void* h_genUS(void* __this, void* m) {
               if (isCustomPlateEnabled && customPlateText[0]) {
                   void* r = mkStr([NSString stringWithUTF8String:customPlateText]);
                   if (r) return r;
               }
-              return o_genUS(m);
+              return o_genUS(__this, m);
           }
-          static void* (*o_genEU)(void*);
-          static void* h_genEU(void* m) {
+
+          // ================================================================
+          //  HOOK 7: PlateGenerators.GenerateEU()  [STATIC]
+          // ================================================================
+          static void* (*o_genEU)(void*, void*);
+          static void* h_genEU(void* __this, void* m) {
               if (isCustomPlateEnabled && customPlateText[0]) {
                   void* r = mkStr([NSString stringWithUTF8String:customPlateText]);
                   if (r) return r;
               }
-              return o_genEU(m);
+              return o_genEU(__this, m);
           }
-          static void* (*o_plateText)(void*,void*);
+
+          // ================================================================
+          //  HOOK 8: PlateTuner.get_plateText()  [INSTANCE]
+          // ================================================================
+          static void* (*o_plateText)(void*, void*);
           static void* h_plateText(void* self, void* m) {
               if (isCustomPlateEnabled && customPlateText[0]) {
                   void* r = mkStr([NSString stringWithUTF8String:customPlateText]);
@@ -230,8 +246,10 @@ jobs:
               return o_plateText(self, m);
           }
 
-          // ===== HOOK 4: Chat =====
-          static void (*o_chatSend)(void*,void*,void*);
+          // ================================================================
+          //  HOOK 9: ChatManager.Send(string)  [INSTANCE]
+          // ================================================================
+          static void (*o_chatSend)(void*, void*, void*);
           static void h_chatSend(void* self, void* msg, void* m) {
               if (isColorChatEnabled && msg) {
                   NSString *orig = readStr(msg);
@@ -243,18 +261,24 @@ jobs:
               o_chatSend(self, msg, m);
           }
 
-          // ===== HOOK 5: Room Connect =====
-          static void (*o_roomConnect)(void*,void*);
+          // ================================================================
+          //  HOOK 10: HR_UI_RoomListLine.Connect()  [INSTANCE]
+          // ================================================================
+          static void (*o_roomConnect)(void*, void*);
           static void h_roomConnect(void* self, void* m) {
               if (isBypassPasswordEnabled) {
-                  void* empty = mkStr(@"");
-                  if (empty) *(void**)((uintptr_t)self + 0x50) = empty;
+                  @try {
+                      void* empty = mkStr(@"");
+                      if (empty) *(void**)((uintptr_t)self + 0x50) = empty;
+                  } @catch (...) {}
               }
               o_roomConnect(self, m);
           }
 
-          // ===== HOOK 6: EnterPassword =====
-          static void (*o_enterPwd)(void*,void*);
+          // ================================================================
+          //  HOOK 11: HR_PhotonLobbyManager.EnterPassword()  [INSTANCE]
+          // ================================================================
+          static void (*o_enterPwd)(void*, void*);
           static void h_enterPwd(void* self, void* m) {
               if (isBypassPasswordEnabled) {
                   @try {
@@ -269,17 +293,17 @@ jobs:
           }
 
           // =============================================================
-          //  CYBER-GLASS PREMIUM MOD MENU UI
+          //  CYBER-GLASS PREMIUM MOD MENU UI  v17
           // =============================================================
 
-          #define C_BG     [UIColor colorWithRed:0.04 green:0.06 blue:0.10 alpha:0.65] // Ultra glass base
-          #define C_CARD   [UIColor colorWithRed:1.0 green:1.0 blue:1.0 alpha:0.06]    // Glass card
-          #define C_ON     [UIColor colorWithRed:0.0 green:1.0 blue:0.53 alpha:1.0]     // Neon Green
-          #define C_OFF    [UIColor colorWithRed:0.22 green:0.25 blue:0.32 alpha:1.0]    // Muted slate
-          #define C_RED    [UIColor colorWithRed:1.0 green:0.22 blue:0.38 alpha:1.0]     // Neon Red
-          #define C_ACCENT [UIColor colorWithRed:0.52 green:0.22 blue:1.0 alpha:1.0]     // Electric Violet
-          #define C_GOLD   [UIColor colorWithRed:1.0 green:0.73 blue:0.15 alpha:1.0]     // Neon Gold
-          #define C_CYAN   [UIColor colorWithRed:0.0 green:0.90 blue:1.0 alpha:1.0]      // Cyber Cyan
+          #define C_BG     [UIColor colorWithRed:0.04 green:0.06 blue:0.10 alpha:0.65]
+          #define C_CARD   [UIColor colorWithRed:1.0 green:1.0 blue:1.0 alpha:0.06]
+          #define C_ON     [UIColor colorWithRed:0.0 green:1.0 blue:0.53 alpha:1.0]
+          #define C_OFF    [UIColor colorWithRed:0.22 green:0.25 blue:0.32 alpha:1.0]
+          #define C_RED    [UIColor colorWithRed:1.0 green:0.22 blue:0.38 alpha:1.0]
+          #define C_ACCENT [UIColor colorWithRed:0.52 green:0.22 blue:1.0 alpha:1.0]
+          #define C_GOLD   [UIColor colorWithRed:1.0 green:0.73 blue:0.15 alpha:1.0]
+          #define C_CYAN   [UIColor colorWithRed:0.0 green:0.90 blue:1.0 alpha:1.0]
           #define C_TEXT   [UIColor colorWithWhite:1.0 alpha:0.95]
           #define C_SUB    [UIColor colorWithWhite:1.0 alpha:0.50]
 
@@ -290,10 +314,11 @@ jobs:
           @property (nonatomic, strong) UIView *contentView;
           @property (nonatomic, strong) NSMutableDictionary *toggleViews;
           @property (nonatomic, strong) NSMutableDictionary *speedBtns;
-          @property (nonatomic, strong) UILabel *hoverLabel;
           @property (nonatomic, strong) UIButton *plateBtn;
+          @property (nonatomic, strong) UIButton *nameBtn;
           + (instancetype)shared;
           - (void)build;
+          - (void)forceApplySpeed;
           @end
 
           @implementation FEW1NMenu
@@ -310,34 +335,30 @@ jobs:
               self.toggleViews = [NSMutableDictionary new];
               self.speedBtns = [NSMutableDictionary new];
 
-              // ===== FLOATING ACTION BUTTON =====
+              // ===== FAB =====
               self.fab = [UIButton buttonWithType:UIButtonTypeCustom];
               self.fab.frame = CGRectMake(16, 100, 56, 56);
               self.fab.layer.cornerRadius = 28;
               self.fab.clipsToBounds = NO;
 
-              // Glowing Pulse Outer Ring
               UIView *pulseRing = [[UIView alloc] initWithFrame:self.fab.bounds];
               pulseRing.layer.cornerRadius = 28;
               pulseRing.backgroundColor = C_CYAN;
               pulseRing.alpha = 0.4;
               pulseRing.userInteractionEnabled = NO;
               [self.fab addSubview:pulseRing];
-
               [UIView animateWithDuration:1.8 delay:0 options:UIViewAnimationOptionRepeat|UIViewAnimationOptionCurveEaseOut animations:^{
                   pulseRing.transform = CGAffineTransformMakeScale(1.6, 1.6);
                   pulseRing.alpha = 0.0;
               } completion:nil];
 
               CAGradientLayer *fabGrad = [CAGradientLayer layer];
-              fabGrad.frame = self.fab.bounds;
-              fabGrad.cornerRadius = 28;
+              fabGrad.frame = self.fab.bounds; fabGrad.cornerRadius = 28;
               fabGrad.colors = @[(id)C_CYAN.CGColor, (id)C_ACCENT.CGColor];
               fabGrad.startPoint = CGPointMake(0,0); fabGrad.endPoint = CGPointMake(1,1);
               [self.fab.layer insertSublayer:fabGrad atIndex:0];
-
               self.fab.layer.shadowColor = C_CYAN.CGColor;
-              self.fab.layer.shadowOffset = CGSizeMake(0, 0);
+              self.fab.layer.shadowOffset = CGSizeMake(0,0);
               self.fab.layer.shadowRadius = 15; self.fab.layer.shadowOpacity = 0.8;
 
               UILabel *fabLbl = [[UILabel alloc] initWithFrame:self.fab.bounds];
@@ -345,14 +366,13 @@ jobs:
               fabLbl.textAlignment = NSTextAlignmentCenter;
               fabLbl.font = [UIFont systemFontOfSize:22 weight:UIFontWeightBlack];
               [self.fab addSubview:fabLbl];
-
               [self.fab addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];
               UIPanGestureRecognizer *pg1 = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
               [self.fab addGestureRecognizer:pg1];
               [w addSubview:self.fab];
 
-              // ===== MAIN PANEL =====
-              CGFloat pw = 310, ph = 560;
+              // ===== PANEL =====
+              CGFloat pw = 310, ph = 580;
               self.panel = [[UIView alloc] initWithFrame:CGRectMake((w.bounds.size.width-pw)/2, (w.bounds.size.height-ph)/2, pw, ph)];
               self.panel.backgroundColor = C_BG;
               self.panel.layer.cornerRadius = 28;
@@ -362,16 +382,14 @@ jobs:
               self.panel.layer.shadowOffset = CGSizeMake(0,0);
               self.panel.layer.shadowRadius = 25; self.panel.layer.shadowOpacity = 0.4;
               self.panel.clipsToBounds = YES;
-              self.panel.hidden = YES;
-              self.panel.alpha = 0;
+              self.panel.hidden = YES; self.panel.alpha = 0;
               self.panel.transform = CGAffineTransformMakeScale(0.85, 0.85);
 
-              // Glassmorphic Blur Background
-              UIBlurEffect *blurEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleDark];
-              UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
-              blurView.frame = self.panel.bounds;
-              blurView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-              [self.panel insertSubview:blurView atIndex:0];
+              UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleDark];
+              UIVisualEffectView *blurV = [[UIVisualEffectView alloc] initWithEffect:blur];
+              blurV.frame = self.panel.bounds;
+              blurV.autoresizingMask = UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+              [self.panel insertSubview:blurV atIndex:0];
 
               UIPanGestureRecognizer *pg2 = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
               [self.panel addGestureRecognizer:pg2];
@@ -380,19 +398,18 @@ jobs:
               UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, pw, 60)];
               header.backgroundColor = [UIColor colorWithWhite:0 alpha:0.2];
 
-              UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, pw-80, 26)];
+              UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(16, 10, pw-80, 26)];
               titleLbl.text = @"FEW1N MOD MENU";
               titleLbl.textColor = [UIColor whiteColor];
               titleLbl.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
               [header addSubview:titleLbl];
 
-              UILabel *verLbl = [[UILabel alloc] initWithFrame:CGRectMake(16, 36, pw-80, 16)];
-              verLbl.text = [NSString stringWithFormat:@"v16.0 • Base: %p", (void*)global_base];
+              UILabel *verLbl = [[UILabel alloc] initWithFrame:CGRectMake(16, 34, pw-80, 16)];
+              verLbl.text = [NSString stringWithFormat:@"v17.0 STABLE | Base: 0x%lX", (unsigned long)global_base];
               verLbl.textColor = C_CYAN;
-              verLbl.font = [UIFont fontWithName:@"CourierNewPS-BoldMT" size:10] ?: [UIFont systemFontOfSize:10 weight:UIFontWeightBold];
+              verLbl.font = [UIFont fontWithName:@"Menlo-Bold" size:9] ?: [UIFont systemFontOfSize:9 weight:UIFontWeightBold];
               [header addSubview:verLbl];
 
-              // Cyan-purple gradient neon line at the bottom of header
               UIView *neonLine = [[UIView alloc] initWithFrame:CGRectMake(0, 58, pw, 2)];
               CAGradientLayer *lineGrad = [CAGradientLayer layer];
               lineGrad.frame = neonLine.bounds;
@@ -403,29 +420,27 @@ jobs:
 
               UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
               closeBtn.frame = CGRectMake(pw-46, 10, 36, 36);
-              [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+              [closeBtn setTitle:@"\u2715" forState:UIControlStateNormal];
               [closeBtn setTitleColor:[UIColor colorWithWhite:1 alpha:0.6] forState:UIControlStateNormal];
               closeBtn.titleLabel.font = [UIFont systemFontOfSize:20 weight:UIFontWeightLight];
               [closeBtn addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];
               [header addSubview:closeBtn];
               [self.panel addSubview:header];
 
-              // ===== SCROLL VIEW =====
+              // ===== SCROLL =====
               self.scrollView = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 60, pw, ph-60)];
               self.scrollView.showsVerticalScrollIndicator = NO;
               [self.panel addSubview:self.scrollView];
-
               self.contentView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, pw, 0)];
               [self.scrollView addSubview:self.contentView];
 
               CGFloat y = 12;
 
-              // ======= SECTION: HIZ =======
-              y = [self addSectionHeader:@"⚡  HIZ KONTROLÜ" atY:y];
-
+              // ======= HIZ =======
+              y = [self addSectionHeader:@"\u26A1  HIZ KONTROLU" atY:y];
               UIView *speedRow = [[UIView alloc] initWithFrame:CGRectMake(12, y, pw-24, 44)];
-              speedRow.backgroundColor = C_CARD;
-              speedRow.layer.cornerRadius = 12;
+              speedRow.backgroundColor = C_CARD; speedRow.layer.cornerRadius = 12;
+              speedRow.layer.borderWidth = 1; speedRow.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.04].CGColor;
               NSArray *speeds = @[@"1x", @"2.5x", @"5x", @"10x"];
               NSArray *speedVals = @[@1, @2, @5, @10];
               CGFloat bw = (pw-24-10*3-16)/4;
@@ -443,50 +458,23 @@ jobs:
               [self.contentView addSubview:speedRow];
               y += 56;
 
-              // ======= SECTION: ARAC =======
-              y = [self addSectionHeader:@"🏎  ARAÇ HİLELERİ" atY:y];
+              // ======= ARAC =======
+              y = [self addSectionHeader:@"\U0001F3CE  ARAC HILELERI" atY:y];
+              y = [self addToggleCard:@"\U0001F527  Motor Gucu"    sub:@"Tork 9999 - Maks guc"       key:@"engine"  atY:y action:@selector(tapEngine)];
+              y = [self addToggleCard:@"\U0001F680  Maks Hiz"      sub:@"Hiz limiti 999'a cikar"     key:@"maxspd"  atY:y action:@selector(tapMaxSpeed)];
+              y = [self addToggleCard:@"\U0001F4A8  Sonsuz Nitro"  sub:@"Nitro hic bitmesin"         key:@"nitro"   atY:y action:@selector(tapNitro)];
 
-              y = [self addToggleCard:@"🦖  Godzilla Modu"   sub:@"Aracı 10x büyüt"        key:@"godzilla"  atY:y action:@selector(tapGodzilla)];
-              y = [self addToggleCard:@"👻  Hayalet Modu"     sub:@"Aracı mini yap"          key:@"ghost"     atY:y action:@selector(tapGhost)];
-              y = [self addToggleCard:@"🔨  Buldozer"         sub:@"999999 kg kütle"          key:@"bulldozer" atY:y action:@selector(tapBulldozer)];
-              y = [self addToggleCard:@"🚁  Hover"            sub:@"Havada asılı kal"         key:@"hover"     atY:y action:@selector(tapHover)];
-
-              // Hover height
-              UIView *hoverCard = [[UIView alloc] initWithFrame:CGRectMake(12, y, pw-24, 44)];
-              hoverCard.backgroundColor = C_CARD; hoverCard.layer.cornerRadius = 12;
-
-              self.hoverLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 0, 120, 44)];
-              self.hoverLabel.text = @"Yükseklik: 5m";
-              self.hoverLabel.textColor = C_TEXT; self.hoverLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
-              [hoverCard addSubview:self.hoverLabel];
-
-              UIButton *hUp = [self mkSmallBtn:@"▲" frame:CGRectMake(pw-24-100, 7, 44, 30) action:@selector(hUp)];
-              UIButton *hDn = [self mkSmallBtn:@"▼" frame:CGRectMake(pw-24-50, 7, 44, 30) action:@selector(hDn)];
-              [hoverCard addSubview:hUp]; [hoverCard addSubview:hDn];
-              [self.contentView addSubview:hoverCard];
-              y += 52;
-
-              // ======= SECTION: KONUM =======
-              y = [self addSectionHeader:@"📍  KONUM" atY:y];
-
-              UIView *posRow = [[UIView alloc] initWithFrame:CGRectMake(12, y, pw-24, 48)];
-              UIButton *saveBtn = [self mkActionBtn:@"💾  Kaydet" frame:CGRectMake(0, 0, (pw-24-8)/2, 48) color:C_ACCENT action:@selector(savePos)];
-              UIButton *tpBtn   = [self mkActionBtn:@"⚡  Işınlan" frame:CGRectMake((pw-24+8)/2, 0, (pw-24-8)/2, 48) color:C_RED action:@selector(tpPos)];
-              [posRow addSubview:saveBtn]; [posRow addSubview:tpBtn];
-              [self.contentView addSubview:posRow];
-              y += 60;
-
-              // ======= SECTION: CHAT =======
-              y = [self addSectionHeader:@"💬  CHAT" atY:y];
-
-              y = [self addToggleCard:@"🎨  Renkli Chat"  sub:@"[FEW1N] prefix + renk"  key:@"colorchat"  atY:y action:@selector(tapColorChat)];
-              y = [self addToggleCard:@"📢  Chat Spam"    sub:@"0.1s aralıkla mesaj"     key:@"chatspam"   atY:y action:@selector(tapChatSpam)];
+              // ======= CHAT =======
+              y = [self addSectionHeader:@"\U0001F4AC  CHAT" atY:y];
+              y = [self addToggleCard:@"\U0001F3A8  Renkli Chat"   sub:@"[FEW1N] prefix + cyan"      key:@"colorchat" atY:y action:@selector(tapColorChat)];
+              y = [self addToggleCard:@"\U0001F4E2  Chat Spam"     sub:@"50ms aralikla mesaj"         key:@"chatspam"  atY:y action:@selector(tapChatSpam)];
 
               UIView *spamRow = [[UIView alloc] initWithFrame:CGRectMake(12, y, pw-24, 44)];
               spamRow.backgroundColor = C_CARD; spamRow.layer.cornerRadius = 12;
+              spamRow.layer.borderWidth = 1; spamRow.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.04].CGColor;
               UIButton *editSpam = [UIButton buttonWithType:UIButtonTypeSystem];
               editSpam.frame = CGRectMake(0, 0, pw-24, 44);
-              [editSpam setTitle:@"✏️  Spam Yazısını Düzenle" forState:UIControlStateNormal];
+              [editSpam setTitle:@"\u270F\uFE0F  Spam Yazisini Duzenle" forState:UIControlStateNormal];
               [editSpam setTitleColor:C_CYAN forState:UIControlStateNormal];
               editSpam.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
               [editSpam addTarget:self action:@selector(editSpam) forControlEvents:UIControlEventTouchUpInside];
@@ -494,14 +482,14 @@ jobs:
               [self.contentView addSubview:spamRow];
               y += 52;
 
-              // ======= SECTION: PLAKA =======
-              y = [self addSectionHeader:@"🔢  PLAKA" atY:y];
-
+              // ======= PLAKA =======
+              y = [self addSectionHeader:@"\U0001F522  PLAKA" atY:y];
               UIView *plateCard = [[UIView alloc] initWithFrame:CGRectMake(12, y, pw-24, 48)];
               plateCard.backgroundColor = C_CARD; plateCard.layer.cornerRadius = 12;
+              plateCard.layer.borderWidth = 1; plateCard.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.04].CGColor;
               self.plateBtn = [UIButton buttonWithType:UIButtonTypeSystem];
               self.plateBtn.frame = CGRectMake(0, 0, pw-24, 48);
-              [self.plateBtn setTitle:@"📝  Özel Plaka Ayarla" forState:UIControlStateNormal];
+              [self.plateBtn setTitle:@"\U0001F4DD  Ozel Plaka Ayarla" forState:UIControlStateNormal];
               [self.plateBtn setTitleColor:C_GOLD forState:UIControlStateNormal];
               self.plateBtn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
               [self.plateBtn addTarget:self action:@selector(editPlate) forControlEvents:UIControlEventTouchUpInside];
@@ -509,24 +497,53 @@ jobs:
               [self.contentView addSubview:plateCard];
               y += 60;
 
-              // ======= SECTION: ODA =======
-              y = [self addSectionHeader:@"🔑  ODA" atY:y];
+              // ======= ISIM =======
+              y = [self addSectionHeader:@"\U0001F4DB  OYUNCU" atY:y];
+              UIView *nameCard = [[UIView alloc] initWithFrame:CGRectMake(12, y, pw-24, 48)];
+              nameCard.backgroundColor = C_CARD; nameCard.layer.cornerRadius = 12;
+              nameCard.layer.borderWidth = 1; nameCard.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.04].CGColor;
+              self.nameBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+              self.nameBtn.frame = CGRectMake(0, 0, pw-24, 48);
+              [self.nameBtn setTitle:@"\U0001F4DB  Isim Degistir" forState:UIControlStateNormal];
+              [self.nameBtn setTitleColor:C_CYAN forState:UIControlStateNormal];
+              self.nameBtn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
+              [self.nameBtn addTarget:self action:@selector(changeName) forControlEvents:UIControlEventTouchUpInside];
+              [nameCard addSubview:self.nameBtn];
+              [self.contentView addSubview:nameCard];
+              y += 60;
 
-              y = [self addToggleCard:@"🔓  Şifre Kırıcı"  sub:@"Şifreli odalara gir"  key:@"bypass"  atY:y action:@selector(tapBypass)];
+              // ======= ODA =======
+              y = [self addSectionHeader:@"\U0001F511  ODA" atY:y];
+              y = [self addToggleCard:@"\U0001F513  Sifre Kirici"  sub:@"Sifreli odalara gir"  key:@"bypass"  atY:y action:@selector(tapBypass)];
 
-              // ===== FOOTER =====
-              UILabel *foot = [[UILabel alloc] initWithFrame:CGRectMake(0, y+8, pw, 24)];
-              foot.text = @"made by few1n 🖤";
+              // ===== STATUS =====
+              UIView *statusCard = [[UIView alloc] initWithFrame:CGRectMake(12, y, pw-24, 36)];
+              statusCard.backgroundColor = [UIColor colorWithRed:0.0 green:1.0 blue:0.53 alpha:0.08];
+              statusCard.layer.cornerRadius = 10;
+              statusCard.layer.borderWidth = 1;
+              statusCard.layer.borderColor = [UIColor colorWithRed:0.0 green:1.0 blue:0.53 alpha:0.2].CGColor;
+              UILabel *statusLbl = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, pw-24, 36)];
+              statusLbl.text = global_base ? @"\u2705 Hooklar aktif" : @"\u274C Framework bulunamadi";
+              statusLbl.textColor = global_base ? C_ON : C_RED;
+              statusLbl.textAlignment = NSTextAlignmentCenter;
+              statusLbl.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
+              [statusCard addSubview:statusLbl];
+              [self.contentView addSubview:statusCard];
+              y += 44;
+
+              UILabel *foot = [[UILabel alloc] initWithFrame:CGRectMake(0, y+4, pw, 24)];
+              foot.text = @"made by few1n \U0001F5A4";
               foot.textColor = [UIColor colorWithWhite:0.3 alpha:1]; foot.textAlignment = NSTextAlignmentCenter;
               foot.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
               [self.contentView addSubview:foot];
-              y += 40;
+              y += 36;
 
               self.contentView.frame = CGRectMake(0, 0, pw, y);
               self.scrollView.contentSize = CGSizeMake(pw, y);
-
               [w addSubview:self.panel];
               [self refreshUI];
+
+              speedEnforceTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(forceApplySpeed) userInfo:nil repeats:YES];
           }
 
           // ===== UI HELPERS =====
@@ -555,22 +572,13 @@ jobs:
               sl.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
               [card addSubview:sl];
 
-              // Custom toggle pill (Cyber look)
               UIView *pill = [[UIView alloc] initWithFrame:CGRectMake(pw-24-60, 15, 44, 24)];
-              pill.backgroundColor = C_OFF; pill.layer.cornerRadius = 12;
-              pill.tag = 100;
-
+              pill.backgroundColor = C_OFF; pill.layer.cornerRadius = 12; pill.tag = 100;
               UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(2, 2, 20, 20)];
-              dot.backgroundColor = [UIColor whiteColor]; dot.layer.cornerRadius = 10;
-              dot.tag = 101;
-              
-              // Shadow for the dot
+              dot.backgroundColor = [UIColor whiteColor]; dot.layer.cornerRadius = 10; dot.tag = 101;
               dot.layer.shadowColor = [UIColor blackColor].CGColor;
-              dot.layer.shadowOffset = CGSizeMake(0, 1);
-              dot.layer.shadowRadius = 2; dot.layer.shadowOpacity = 0.3;
-              
-              [pill addSubview:dot];
-              [card addSubview:pill];
+              dot.layer.shadowOffset = CGSizeMake(0,1); dot.layer.shadowRadius = 2; dot.layer.shadowOpacity = 0.3;
+              [pill addSubview:dot]; [card addSubview:pill];
 
               UIButton *tapBtn = [UIButton buttonWithType:UIButtonTypeCustom];
               tapBtn.frame = card.bounds;
@@ -582,26 +590,6 @@ jobs:
               return y + 64;
           }
 
-          - (UIButton*)mkSmallBtn:(NSString*)t frame:(CGRect)f action:(SEL)a {
-              UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem]; b.frame = f;
-              [b setTitle:t forState:UIControlStateNormal];
-              [b setTitleColor:C_TEXT forState:UIControlStateNormal];
-              b.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1]; b.layer.cornerRadius = 8;
-              b.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightBold];
-              [b addTarget:self action:a forControlEvents:UIControlEventTouchUpInside];
-              return b;
-          }
-
-          - (UIButton*)mkActionBtn:(NSString*)t frame:(CGRect)f color:(UIColor*)c action:(SEL)a {
-              UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem]; b.frame = f;
-              [b setTitle:t forState:UIControlStateNormal];
-              [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-              b.backgroundColor = c; b.layer.cornerRadius = 12;
-              b.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
-              [b addTarget:self action:a forControlEvents:UIControlEventTouchUpInside];
-              return b;
-          }
-
           - (void)setToggle:(NSString*)key on:(BOOL)on {
               UIView *pill = self.toggleViews[key];
               if (!pill) return;
@@ -609,42 +597,32 @@ jobs:
               [UIView animateWithDuration:0.3 delay:0 usingSpringWithDamping:0.6 initialSpringVelocity:0.5 options:0 animations:^{
                   pill.backgroundColor = on ? C_ON : C_OFF;
                   dot.frame = on ? CGRectMake(22, 2, 20, 20) : CGRectMake(2, 2, 20, 20);
-                  
-                  // Add neon glow to active pills
-                  if (on) {
-                      pill.layer.shadowColor = C_ON.CGColor;
-                      pill.layer.shadowOffset = CGSizeMake(0, 0);
-                      pill.layer.shadowRadius = 8; pill.layer.shadowOpacity = 0.6;
-                  } else {
-                      pill.layer.shadowOpacity = 0.0;
-                  }
+                  if (on) { pill.layer.shadowColor = C_ON.CGColor; pill.layer.shadowOffset = CGSizeMake(0,0); pill.layer.shadowRadius = 8; pill.layer.shadowOpacity = 0.6; }
+                  else { pill.layer.shadowOpacity = 0.0; }
               } completion:nil];
           }
 
           - (void)refreshUI {
-              // Speed buttons
               for (NSNumber *val in self.speedBtns) {
                   UIButton *b = self.speedBtns[val];
                   BOOL active = (speedMode == val.intValue);
                   b.backgroundColor = active ? C_ON : [UIColor colorWithWhite:0.18 alpha:1];
                   [b setTitleColor:active ? [UIColor blackColor] : C_TEXT forState:UIControlStateNormal];
+                  if (active) { b.layer.shadowColor = C_ON.CGColor; b.layer.shadowRadius = 6; b.layer.shadowOpacity = 0.5; b.layer.shadowOffset = CGSizeMake(0,0); }
+                  else { b.layer.shadowOpacity = 0; }
               }
-              // Toggles
-              [self setToggle:@"godzilla"  on:(sizeMode==1)];
-              [self setToggle:@"ghost"     on:(sizeMode==2)];
-              [self setToggle:@"bulldozer" on:isBulldozerEnabled];
-              [self setToggle:@"hover"     on:isHoverEnabled];
+              [self setToggle:@"engine"    on:isEnginePowerEnabled];
+              [self setToggle:@"maxspd"    on:isMaxSpeedEnabled];
+              [self setToggle:@"nitro"     on:isInfiniteNitroEnabled];
               [self setToggle:@"colorchat" on:isColorChatEnabled];
               [self setToggle:@"chatspam"  on:isSpamEnabled];
               [self setToggle:@"bypass"    on:isBypassPasswordEnabled];
 
-              self.hoverLabel.text = [NSString stringWithFormat:@"Yükseklik: %.0fm", hoverHeight];
-
               if (isCustomPlateEnabled) {
-                  [self.plateBtn setTitle:[NSString stringWithFormat:@"📝  Plaka: %s ✅", customPlateText] forState:UIControlStateNormal];
+                  [self.plateBtn setTitle:[NSString stringWithFormat:@"\U0001F4DD  Plaka: %s \u2705", customPlateText] forState:UIControlStateNormal];
                   [self.plateBtn setTitleColor:C_ON forState:UIControlStateNormal];
               } else {
-                  [self.plateBtn setTitle:@"📝  Özel Plaka Ayarla" forState:UIControlStateNormal];
+                  [self.plateBtn setTitle:@"\U0001F4DD  Ozel Plaka Ayarla" forState:UIControlStateNormal];
                   [self.plateBtn setTitleColor:C_GOLD forState:UIControlStateNormal];
               }
           }
@@ -655,13 +633,11 @@ jobs:
               if (showing) {
                   self.panel.hidden = NO;
                   [UIView animateWithDuration:0.35 delay:0 usingSpringWithDamping:0.8 initialSpringVelocity:0.5 options:0 animations:^{
-                      self.panel.alpha = 1;
-                      self.panel.transform = CGAffineTransformIdentity;
+                      self.panel.alpha = 1; self.panel.transform = CGAffineTransformIdentity;
                   } completion:nil];
               } else {
                   [UIView animateWithDuration:0.2 animations:^{
-                      self.panel.alpha = 0;
-                      self.panel.transform = CGAffineTransformMakeScale(0.9, 0.9);
+                      self.panel.alpha = 0; self.panel.transform = CGAffineTransformMakeScale(0.9, 0.9);
                   } completion:^(BOOL f){ self.panel.hidden = YES; }];
               }
           }
@@ -671,57 +647,73 @@ jobs:
               v.center = CGPointMake(v.center.x+t.x, v.center.y+t.y);
               [g setTranslation:CGPointZero inView:v.superview];
           }
-
+          - (void)forceApplySpeed {
+              if (!o_setTimeScale) return;
+              float v = 1.0f;
+              if (speedMode == 2) v = 2.5f;
+              else if (speedMode == 5) v = 5.0f;
+              else if (speedMode == 10) v = 10.0f;
+              o_setTimeScale(NULL, v, NULL);
+          }
           - (void)speedTap:(UIButton*)s {
               speedMode = (int)s.tag;
               [self refreshUI];
-              if (o_setTimeScale) {
-                  float v = 1.0f;
-                  if (speedMode == 2)  v = 2.5f;
-                  else if (speedMode == 5)  v = 5.0f;
-                  else if (speedMode == 10) v = 10.0f;
-                  o_setTimeScale(v, NULL);
-              }
+              [self forceApplySpeed];
           }
-          - (void)tapGodzilla  { sizeMode = (sizeMode==1)?0:1; [self refreshUI]; }
-          - (void)tapGhost     { sizeMode = (sizeMode==2)?0:2; [self refreshUI]; }
-          - (void)tapBulldozer { isBulldozerEnabled = !isBulldozerEnabled; [self refreshUI]; }
-          - (void)tapHover     { isHoverEnabled = !isHoverEnabled; [self refreshUI]; }
-          - (void)tapColorChat { isColorChatEnabled = !isColorChatEnabled; [self refreshUI]; }
+          - (void)tapEngine     { isEnginePowerEnabled = !isEnginePowerEnabled; [self refreshUI]; }
+          - (void)tapMaxSpeed   { isMaxSpeedEnabled = !isMaxSpeedEnabled; [self refreshUI]; }
+          - (void)tapNitro      { isInfiniteNitroEnabled = !isInfiniteNitroEnabled; [self refreshUI]; }
+          - (void)tapColorChat  { isColorChatEnabled = !isColorChatEnabled; [self refreshUI]; }
           - (void)tapChatSpam {
               isSpamEnabled = !isSpamEnabled;
               if (isSpamEnabled) {
-                  spamTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 target:self selector:@selector(fireSpam) userInfo:nil repeats:YES];
+                  spamTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 target:self selector:@selector(fireSpam) userInfo:nil repeats:YES];
               } else { [spamTimer invalidate]; spamTimer = nil; }
               [self refreshUI];
           }
           - (void)tapBypass { isBypassPasswordEnabled = !isBypassPasswordEnabled; [self refreshUI]; }
-          - (void)hUp { hoverHeight += 5; [self refreshUI]; }
-          - (void)hDn { hoverHeight -= 5; [self refreshUI]; }
-          - (void)savePos { isSavePosRequested = true; }
-          - (void)tpPos { isTeleportRequested = true; }
 
           - (void)fireSpam {
               if (!chatGetInst || !chatSend) return;
-              void* mgr = chatGetInst(NULL);
-              if (!mgr) return;
-              void* s = mkStr([NSString stringWithUTF8String:chatSpamText]);
-              if (s) chatSend(mgr, s, NULL);
+              @try {
+                  void* mgr = chatGetInst(NULL, NULL);
+                  if (!mgr) return;
+                  void* s = mkStr([NSString stringWithUTF8String:chatSpamText]);
+                  if (s) chatSend(mgr, s, NULL);
+              } @catch (...) {}
+          }
+
+          - (void)changeName {
+              UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F4DB Isim Degistir" message:@"Yeni ismin:" preferredStyle:UIAlertControllerStyleAlert];
+              [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"FEW1N"; tf.clearButtonMode = UITextFieldViewModeAlways; }];
+              [ac addAction:[UIAlertAction actionWithTitle:@"Degistir" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+                  NSString *name = ac.textFields.firstObject.text;
+                  if (name.length > 0 && pn_setNickName) {
+                      void* nameStr = mkStr(name);
+                      if (nameStr) {
+                          pn_setNickName(NULL, nameStr, NULL);
+                          [self.nameBtn setTitle:[NSString stringWithFormat:@"\U0001F4DB  Isim: %@ \u2705", name] forState:UIControlStateNormal];
+                          [self.nameBtn setTitleColor:C_ON forState:UIControlStateNormal];
+                      }
+                  }
+              }]];
+              [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+              [self presentAlert:ac];
           }
 
           - (void)editSpam {
-              UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"💬 Spam Yazısı" message:nil preferredStyle:UIAlertControllerStyleAlert];
+              UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F4AC Spam Yazisi" message:nil preferredStyle:UIAlertControllerStyleAlert];
               [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.text = [NSString stringWithUTF8String:chatSpamText]; tf.clearButtonMode = UITextFieldViewModeAlways; }];
               [ac addAction:[UIAlertAction actionWithTitle:@"Kaydet" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
                   NSString *t = ac.textFields.firstObject.text;
                   if(t.length>0) strncpy(chatSpamText, t.UTF8String, 127);
               }]];
-              [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+              [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
               [self presentAlert:ac];
           }
 
           - (void)editPlate {
-              UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🔢 Özel Plaka" message:@"Plakada görünecek yazı:" preferredStyle:UIAlertControllerStyleAlert];
+              UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F522 Ozel Plaka" message:@"Plakada gorunecek yazi:" preferredStyle:UIAlertControllerStyleAlert];
               [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
                   tf.placeholder = @"FEW1N";
                   if(isCustomPlateEnabled) tf.text = [NSString stringWithUTF8String:customPlateText];
@@ -744,55 +736,54 @@ jobs:
           }
           @end
 
-          // ===== HOOK REGISTRATION =====
+          // =============================================================
+          //  HOOK REGISTRATION
+          // =============================================================
           static void OnImageAdded(const struct mach_header *mh, intptr_t slide) {
               const char* fname = NULL;
               Dl_info info;
-              if (dladdr(mh, &info) && info.dli_fname) {
-                  fname = info.dli_fname;
-              } else {
+              if (dladdr(mh, &info) && info.dli_fname) fname = info.dli_fname;
+              else {
                   for (uint32_t i = 0; i < _dyld_image_count(); i++) {
-                      if (_dyld_get_image_header(i) == mh) {
-                          fname = _dyld_get_image_name(i);
-                          break;
-                      }
+                      if (_dyld_get_image_header(i) == mh) { fname = _dyld_get_image_name(i); break; }
                   }
               }
+              if (!fname || !strstr(fname, "UnityFramework")) return;
 
-              if (fname && strstr(fname, "UnityFramework")) {
-                  uintptr_t b = (uintptr_t)mh;
-                  if (global_base != 0) return; // Prevent double hooking
-                  global_base = b;
+              uintptr_t b = (uintptr_t)mh;
+              if (global_base != 0) return;
+              global_base = b;
 
-                  rb_getPos      = (struct Vector3(*)(void*,void*))(b+0x6819010);
-                  rb_setPos      = (void(*)(void*,struct Vector3,void*))(b+0x6819124);
-                  rb_getVel      = (struct Vector3(*)(void*,void*))(b+0x6817D68);
-                  rb_setVel      = (void(*)(void*,struct Vector3,void*))(b+0x6817E7C);
-                  rb_setMass     = (void(*)(void*,float,void*))(b+0x681869C);
-                  getTransform   = (void*(*)(void*,void*))(b+0x673C9DC);
-                  setScale       = (void(*)(void*,struct Vector3,void*))(b+0x6757F98);
-                  chatGetInst    = (void*(*)(void*))(b+0x319D630);
-                  chatSend       = (void(*)(void*,void*,void*))(b+0x319D734);
-                  tmp_set_text   = (void(*)(void*,void*,void*))(b+0x65D6B24);
+              // Function pointers
+              chatGetInst    = (void*(*)(void*,void*))(b+0x319D630);
+              chatSend       = (void(*)(void*,void*,void*))(b+0x319D734);
+              tmp_set_text   = (void(*)(void*,void*,void*))(b+0x65D6B24);
+              pn_setNickName = (void(*)(void*,void*,void*))(b+0x59161D0);
 
-                  // ===== TUM HOOKLAR =====
-                  MSHookFunction((void*)(b+0x67523F8), (void*)h_setTimeScale, (void**)&o_setTimeScale);
-                  MSHookFunction((void*)(b+0x59A77D8), (void*)h_rccp,         (void**)&o_rccp);
-                  MSHookFunction((void*)(b+0x5A12550), (void*)h_plateGen,     (void**)&o_plateGen);
-                  MSHookFunction((void*)(b+0x5A218F4), (void*)h_genRU,        (void**)&o_genRU);
-                  MSHookFunction((void*)(b+0x5A22100), (void*)h_genUS,        (void**)&o_genUS);
-                  MSHookFunction((void*)(b+0x5A22ADC), (void*)h_genEU,        (void**)&o_genEU);
-                  MSHookFunction((void*)(b+0x5F85AEC), (void*)h_plateText,    (void**)&o_plateText);
-                  MSHookFunction((void*)(b+0x319D734), (void*)h_chatSend,     (void**)&o_chatSend);
-                  MSHookFunction((void*)(b+0x5497790), (void*)h_roomConnect,  (void**)&o_roomConnect);
-                  MSHookFunction((void*)(b+0x548C5CC), (void*)h_enterPwd,     (void**)&o_enterPwd);
-              }
+              // === ALL HOOKS ===
+              // 1. Time.set_timeScale [STATIC]
+              MSHookFunction((void*)(b+0x67523F8), (void*)h_setTimeScale, (void**)&o_setTimeScale);
+              // 2. RCCP_CarController.Update [INSTANCE] - motor gucu + maks hiz
+              MSHookFunction((void*)(b+0x59A77D8), (void*)h_rccp, (void**)&o_rccp);
+              // 3. CarNitro.get_nitroAmount [INSTANCE] - sonsuz nitro
+              MSHookFunction((void*)(b+0x54B3E98), (void*)h_getNitro, (void**)&o_getNitro);
+              // 4-6. PlateGenerators [STATIC]
+              MSHookFunction((void*)(b+0x5A12550), (void*)h_plateGen, (void**)&o_plateGen);
+              MSHookFunction((void*)(b+0x5A218F4), (void*)h_genRU, (void**)&o_genRU);
+              MSHookFunction((void*)(b+0x5A22100), (void*)h_genUS, (void**)&o_genUS);
+              MSHookFunction((void*)(b+0x5A22ADC), (void*)h_genEU, (void**)&o_genEU);
+              // 7. PlateTuner.get_plateText [INSTANCE]
+              MSHookFunction((void*)(b+0x5F85AEC), (void*)h_plateText, (void**)&o_plateText);
+              // 8. ChatManager.Send [INSTANCE]
+              MSHookFunction((void*)(b+0x319D734), (void*)h_chatSend, (void**)&o_chatSend);
+              // 9. HR_UI_RoomListLine.Connect [INSTANCE]
+              MSHookFunction((void*)(b+0x5497790), (void*)h_roomConnect, (void**)&o_roomConnect);
+              // 10. HR_PhotonLobbyManager.EnterPassword [INSTANCE]
+              MSHookFunction((void*)(b+0x548C5CC), (void*)h_enterPwd, (void**)&o_enterPwd);
           }
 
-          // ===== %ctor =====
           %ctor {
               _dyld_register_func_for_add_image(OnImageAdded);
-
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5*NSEC_PER_SEC), dispatch_get_main_queue(), ^{
                   [[FEW1NMenu shared] build];
               });
@@ -804,10 +795,10 @@ jobs:
           export THEOS=~/theos
           make package clean
           make package FINALPACKAGE=1
-          find packages -name "*.deb" -exec mv {} packages/FEW1NMod_16.0_${{ github.run_number }}.deb \;
+          find packages -name "*.deb" -exec mv {} packages/FEW1NMod_17.0_${{ github.run_number }}.deb \;
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FEW1N-ModMenu-Tweak-v16-${{ github.run_number }}
-          path: packages/FEW1NMod_16.0_${{ github.run_number }}.deb
+          name: FEW1N-ModMenu-Tweak-v17-${{ github.run_number }}
+          path: packages/FEW1NMod_17.0_${{ github.run_number }}.deb
