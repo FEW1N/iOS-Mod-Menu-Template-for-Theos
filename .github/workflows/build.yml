@@ -40,9 +40,9 @@ jobs:
           Package: com.few1n.dreamroadmod
           Name: FEW1N Mod Menu
           Depends: mobilesubstrate, firmware (>= 14.0)
-          Version: 19.0
+          Version: 20.0
           Architecture: iphoneos-arm64
-          Description: FEW1N Premium Mod Menu v19.0 for DreamRoadMultiplayer
+          Description: FEW1N Premium Mod Menu v20.0 for DreamRoadMultiplayer
           Maintainer: few1n
           Author: few1n
           Section: Tweaks
@@ -78,10 +78,29 @@ jobs:
       - name: Rename Package
         run: |
           mkdir -p output
-          cp packages/*.deb output/FEW1NMod_19.0_${{ github.run_number }}.deb
+          cp packages/*.deb output/FEW1NMod_20.0_${{ github.run_number }}.deb
 
-      - name: Upload Artifact
+      - name: Extract dylib for sideloading
+        run: |
+          # Theos derlemesinden gelen ham .dylib (sideload/enjeksiyon icin)
+          DYLIB=$(find .theos/obj -name "*.dylib" | head -1)
+          if [ -z "$DYLIB" ]; then
+            # .deb icinden cikar (fallback)
+            dpkg -x packages/*.deb extracted
+            DYLIB=$(find extracted -name "*.dylib" | head -1)
+          fi
+          echo "dylib: $DYLIB"
+          cp "$DYLIB" output/FEW1NMod.dylib
+          ls -la output/
+
+      - name: Upload .deb (jailbreak)
         uses: actions/upload-artifact@v4
         with:
-          name: FEW1N-ModMenu-v19-${{ github.run_number }}
+          name: FEW1N-ModMenu-v20-deb-${{ github.run_number }}
           path: output/*.deb
+
+      - name: Upload .dylib (sideload)
+        uses: actions/upload-artifact@v4
+        with:
+          name: FEW1N-ModMenu-v20-dylib-${{ github.run_number }}
+          path: output/FEW1NMod.dylib
