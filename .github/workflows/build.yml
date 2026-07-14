@@ -1,0 +1,81 @@
+name: Build iOS Mod Menu
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          export HOMEBREW_NO_INSTALL_CLEANUP=1
+          brew install dpkg ldid xz || true
+
+      - name: Setup Theos
+        run: |
+          git clone --recursive https://github.com/theos/theos.git $HOME/theos
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+
+      - name: Setup iOS SDK
+        run: |
+          git clone --depth 1 https://github.com/theos/sdks.git
+          cp -R sdks/iPhoneOS* $HOME/theos/sdks/ || true
+
+      - name: Prepare Build Files
+        run: |
+          cat > control << 'EOF'
+          Package: com.few1n.dreamroadmod
+          Name: FEW1N Mod Menu
+          Depends: mobilesubstrate, firmware (>= 14.0)
+          Version: 19.0
+          Architecture: iphoneos-arm64
+          Description: FEW1N Premium Mod Menu v19.0 for DreamRoadMultiplayer
+          Maintainer: few1n
+          Author: few1n
+          Section: Tweaks
+          EOF
+
+          cat > Makefile << 'EOF'
+          TARGET := iphone:clang:latest:14.0
+          ARCHS = arm64
+          INSTALL_TARGET_PROCESSES = DreamRoadMultiplayer
+          THEOS_PACKAGE_SCHEME = rootless
+
+          include $(THEOS)/makefiles/common.mk
+
+          TWEAK_NAME = FEW1NMod
+
+          FEW1NMod_FILES = Tweak.xm
+          FEW1NMod_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-variable
+          FEW1NMod_FRAMEWORKS = UIKit Foundation QuartzCore CoreGraphics
+
+          include $(THEOS_MAKE_PATH)/tweak.mk
+          EOF
+
+          cat > FEW1NMod.plist << 'EOF'
+          { Filter = { Bundles = ( "com.TenebryFox.DreamRoadMultiplayer" ); }; }
+          EOF
+
+      - name: Build Tweak
+        run: |
+          export THEOS=$HOME/theos
+          make clean
+          make package FINALPACKAGE=1
+
+      - name: Rename Package
+        run: |
+          mkdir -p output
+          cp packages/*.deb output/FEW1NMod_19.0_${{ github.run_number }}.deb
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FEW1N-ModMenu-v19-${{ github.run_number }}
+          path: output/*.deb
