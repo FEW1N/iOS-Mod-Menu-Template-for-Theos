@@ -1083,29 +1083,31 @@ static void InstallEverything(uintptr_t b) {
 // =============================================================
 //  CONSTRUCTOR  -  robust polling for UnityFramework
 // =============================================================
+// Poll implemented as a plain C function so no block captures itself
+// (avoids ARC retain-cycle). Re-arms via dispatch_after until the
+// UnityFramework base is found or the attempt budget is exhausted.
+static int few1n_attempts = 0;
+static void few1n_poll(void) {
+    few1n_attempts++;
+    uintptr_t b = GetUnityFrameworkBase();
+    if (b != 0) {
+        NSLog(@"[FEW1N] UnityFramework found on attempt %d.", few1n_attempts);
+        InstallEverything(b);
+        return;
+    }
+    if (few1n_attempts >= 80) { // ~40s worth of 0.5s polls
+        NSLog(@"[FEW1N] FATAL: UnityFramework not found after %d attempts. Showing menu without hooks.", few1n_attempts);
+        [[FEW1NMenu shared] build];
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ few1n_poll(); });
+}
+
 %ctor {
     NSLog(@"[FEW1N] v19.0 constructor triggered at %@", [NSDate date]);
     restoreSettings();
-
-    __block int attempts = 0;
-    __block void (^poll)(void) = nil;
-    poll = ^{
-        attempts++;
-        uintptr_t b = GetUnityFrameworkBase();
-        if (b != 0) {
-            NSLog(@"[FEW1N] UnityFramework found on attempt %d.", attempts);
-            InstallEverything(b);
-            poll = nil;
-            return;
-        }
-        if (attempts >= 80) { // ~40s worth of 0.5s polls
-            NSLog(@"[FEW1N] FATAL: UnityFramework not found after %d attempts. Showing menu without hooks.", attempts);
-            [[FEW1NMenu shared] build];
-            poll = nil;
-            return;
-        }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), poll);
-    };
     // give the app a moment to start loading UnityFramework, then begin polling
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), poll);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
+                   dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
