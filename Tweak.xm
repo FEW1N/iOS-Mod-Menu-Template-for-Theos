@@ -5,6 +5,7 @@
 #include <mach-o/dyld.h>
 #include <string.h>
 #include <dlfcn.h>
+#include <math.h>
 
 // ============================================================
 //  v21.0 - FEW1N MOD MENU
@@ -59,6 +60,9 @@ static bool isSpamEnabled = false;
 static bool isBypassPasswordEnabled = true;
 static bool isCustomPlateEnabled = false;
 static bool isAutoMoneyEnabled = false;
+static bool isFlyEnabled = false;       // hover (dikey hizi 0 tut -> havada surus)
+static bool isLowGravEnabled = false;   // dususu yavaslat (floaty)
+static void* g_rb = NULL;               // arabanin Rigidbody'si (h_driveMove'da yakalanir)
 static char customPlateText[64] = "FEW1N";
 static char chatSpamText[128] = "FEW1N MOD MENU!";
 static int  customMoneyAmount = 100000000;
@@ -136,6 +140,15 @@ static int   (*pm_getMoney)(void* self) = NULL;
 static void  (*pm_syncWithServer)(void* self) = NULL;
 static void  (*pm_addMoney)(void* self, int amount) = NULL;
 
+// ===== HIZ TESHIS / YARDIMCILAR =====
+typedef struct { float x, y, z; } Vec3;
+static float (*ts_get)(void) = NULL;     // Time.get_timeScale
+static void (*rb_getVel)(void* self, Vec3* out) = NULL;   // Rigidbody.get_linearVelocity_Injected
+static void (*rb_setVel)(void* self, Vec3* val) = NULL;   // Rigidbody.set_linearVelocity_Injected
+static void* diagDrive = NULL;
+static float diagCurSpd = 0, diagTopSpd = 0, diagVel = 0;
+static float g_origTop = 0;
+
 // ===== TIME SCALE =====
 static void (*o_setTimeScale)(float) = NULL;
 static inline float targetScale(void) {
@@ -168,11 +181,49 @@ static void h_setNitro(void* self, float value) {
     if (o_setNitro) o_setNitro(self, value);
 }
 
-// ===== CarDriveSystem.Move : per-frame timeScale zorlama =====
+// ===== CarDriveSystem.Move : hiz hilesi (tam gaz + topSpeed) + teshis =====
+// a=steering, b=accel(0..1), c=footbrake, d=handbrake
+// topSpeed@0x98, currentSpeed@0x9C  (public, isimleri korundu)
 static void (*o_driveMove)(void*, float, float, float, float) = NULL;
 static void h_driveMove(void* self, float a, float b, float c, float d) {
     enforceScale();
-    if (o_driveMove) o_driveMove(self, a, b, c, d);
+    if (self && speedMode > 1) {
+        // TAM GAZ (fren yoksa) - kuvvet yok, araba kalkmaz
+        if (c <= 0.0f && d <= 0.0f) b = 1.0f;
+    }
+    if (o_driveMove) o_driveMove(self, a, b, c, d);   // once oyunun fizigi calissin
+
+    if (self) {
+        @try {
+            diagDrive  = self;
+            diagCurSpd = *(float*)((uintptr_t)self + 0x9C);   // currentSpeed
+            diagTopSpd = *(float*)((uintptr_t)self + 0x98);   // topSpeed
+            // topSpeed cap'ini de yukselt (bazi oyunlar hizi buna clamp eder)
+            if (speedMode > 1) {
+                if (g_origTop <= 0.0f && diagTopSpd > 0.0f && diagTopSpd < 1000.0f) g_origTop = diagTopSpd;
+                float base = (g_origTop > 0.0f) ? g_origTop : 200.0f;
+                *(float*)((uintptr_t)self + 0x98) = base * 3.0f;
+            } else if (g_origTop > 0.0f) {
+                *(float*)((uintptr_t)self + 0x98) = g_origTop; g_origTop = 0.0f;
+            }
+            // ASIL HIZ: Rigidbody linearVelocity'yi dogrudan olcekle (en kesin yontem)
+            void* rb = *(void**)((uintptr_t)self + 0x48);     // CarDriveSystem._rigidbody
+            g_rb = rb;                                        // fly/zipla/lowgrav icin sakla
+            if (rb && rb_getVel && rb_setVel) {
+                Vec3 v = {0,0,0};
+                rb_getVel(rb, &v);
+                float horiz = sqrtf(v.x*v.x + v.z*v.z);       // yatay hiz (y=dikey, dokunmuyoruz -> ucmaz)
+                diagVel = horiz;
+                if (speedMode > 1 && horiz > 0.5f) {
+                    float cap = (speedMode == 2) ? 90.0f : (speedMode == 3) ? 140.0f : 230.0f;
+                    float ns = horiz * 1.06f; if (ns > cap) ns = cap;
+                    float k = ns / horiz;
+                    v.x *= k; v.z *= k;                        // sadece yatayi buyut
+                    rb_setVel(rb, &v);
+                }
+            }
+        } @catch (...) {}
+    }
 }
 
 // ===== CUSTOM PLATE =====
@@ -251,6 +302,7 @@ static void h_addMoney(void* self, int amount) {
 @property (nonatomic, strong) UIButton *moneyBtn;
 @property (nonatomic, strong) UIView *logOverlay;
 @property (nonatomic, strong) UITextView *logText;
+@property (nonatomic, strong) CADisplayLink *dl;
 + (instancetype)shared;
 - (void)build;
 @end
@@ -334,7 +386,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v21.1 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v21.5 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -389,6 +441,9 @@ static void h_addMoney(void* self, int amount) {
 
     y = [self header:@"\U0001F3CE  ARAC" atY:y];
     y = [self toggle:@"\U0001F4A8  Sonsuz Nitro" sub:@"Nitro hic bitmez" key:@"nitro" atY:y action:@selector(tapNitro)];
+    y = [self toggle:@"\U0001F681  Ucus (Hover)"  sub:@"Havada asili kal, surerek uc" key:@"fly" atY:y action:@selector(tapFly)];
+    y = [self toggle:@"\U0001FAB6  Dusuk Yercekimi" sub:@"Dusus yavas, floaty" key:@"lowgrav" atY:y action:@selector(tapLowGrav)];
+    y = [self actionRow:@"\U0001F53C  ZIPLA (bas)" color:C_ON atY:y action:@selector(jumpTap)];
 
     y = [self header:@"\U0001F4AC  CHAT" atY:y];
     y = [self toggle:@"\U0001F3A8  Renkli Chat" sub:@"[FEW1N] prefix + cyan" key:@"colorchat" atY:y action:@selector(tapColorChat)];
@@ -449,6 +504,10 @@ static void h_addMoney(void* self, int amount) {
 
     if (tickTimer) { [tickTimer invalidate]; tickTimer = nil; }
     tickTimer = [NSTimer scheduledTimerWithTimeInterval:0.3 target:self selector:@selector(tick) userInfo:nil repeats:YES];
+    // iGameGod gibi: timeScale'i HER FRAME zorla (oyun resetlese bile tutar)
+    if (self.dl) { [self.dl invalidate]; self.dl = nil; }
+    self.dl = [CADisplayLink displayLinkWithTarget:self selector:@selector(frameTick)];
+    [self.dl addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
     if (isSpamEnabled && !spamTimer)
         spamTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 target:self selector:@selector(fireSpam) userInfo:nil repeats:YES];
 }
@@ -553,6 +612,8 @@ static void h_addMoney(void* self, int amount) {
         b.layer.shadowOpacity = on ? 0.5 : 0.0;
     }
     [self setToggle:@"nitro"     on:isInfiniteNitroEnabled];
+    [self setToggle:@"fly"       on:isFlyEnabled];
+    [self setToggle:@"lowgrav"   on:isLowGravEnabled];
     [self setToggle:@"colorchat" on:isColorChatEnabled];
     [self setToggle:@"chatspam"  on:isSpamEnabled];
     [self setToggle:@"bypass"    on:isBypassPasswordEnabled];
@@ -575,7 +636,45 @@ static void h_addMoney(void* self, int amount) {
     [self.plateBtn setTitleColor:isCustomPlateEnabled ? C_ON : C_GOLD forState:UIControlStateNormal];
 }
 
-- (void)tick { enforceScale(); }
+- (void)frameTick {
+    enforceScale();   // her ekran frame'inde timeScale'i zorla
+    // Ucus (hover) ve dusuk yercekimi - Rigidbody dikey hizini ayarla
+    if ((isFlyEnabled || isLowGravEnabled) && g_rb && rb_getVel && rb_setVel) {
+        @try {
+            Vec3 v = {0,0,0};
+            rb_getVel(g_rb, &v);
+            if (isFlyEnabled) {
+                v.y = 0.0f;                       // havada asili kal (dusme yok)
+            } else if (isLowGravEnabled && v.y < 0.0f) {
+                v.y *= 0.25f;                     // dususu yavaslat (floaty)
+            }
+            rb_setVel(g_rb, &v);
+        } @catch (...) {}
+    }
+}
+
+- (void)jumpTap {
+    if (g_rb && rb_getVel && rb_setVel) {
+        @try {
+            Vec3 v = {0,0,0};
+            rb_getVel(g_rb, &v);
+            v.y = 14.0f;                          // yukari itme (zipla)
+            rb_setVel(g_rb, &v);
+        } @catch (...) {}
+    }
+}
+
+- (void)tick {
+    enforceScale();
+    // her ~2 sn'de bir canli hiz teshisini loga yaz
+    static int tc = 0;
+    if (++tc >= 7) {
+        tc = 0;
+        float ts = ts_get ? ts_get() : -1.0f;
+        FLog([NSString stringWithFormat:@"[HIZ] mode=%dx TS=%.2f cur=%.1f top=%.1f vel=%.1f drive=%@",
+              speedMode, ts, diagCurSpd, diagTopSpd, diagVel, diagDrive ? @"VAR" : @"YOK"]);
+    }
+}
 
 - (void)toggle {
     if (self.panel.hidden) {
@@ -606,6 +705,8 @@ static void h_addMoney(void* self, int amount) {
 }
 
 - (void)tapNitro     { isInfiniteNitroEnabled  = !isInfiniteNitroEnabled;  saveBool(@"nitro", isInfiniteNitroEnabled);      [self refreshUI]; }
+- (void)tapFly       { isFlyEnabled            = !isFlyEnabled;            saveBool(@"fly", isFlyEnabled);                  [self refreshUI]; }
+- (void)tapLowGrav   { isLowGravEnabled        = !isLowGravEnabled;        saveBool(@"lowgrav", isLowGravEnabled);          [self refreshUI]; }
 - (void)tapColorChat { isColorChatEnabled       = !isColorChatEnabled;      saveBool(@"colorchat", isColorChatEnabled);      [self refreshUI]; }
 - (void)tapBypass    { isBypassPasswordEnabled  = !isBypassPasswordEnabled; saveBool(@"bypass", isBypassPasswordEnabled);    [self refreshUI]; }
 - (void)tapAutoMoney { isAutoMoneyEnabled        = !isAutoMoneyEnabled;      saveBool(@"automoney", isAutoMoneyEnabled);      [self refreshUI]; }
@@ -775,6 +876,8 @@ static void restoreSettings(void) {
     isColorChatEnabled     = loadBool(@"colorchat", false);
     isSpamEnabled          = loadBool(@"chatspam", false);
     isBypassPasswordEnabled= loadBool(@"bypass", true);
+    isFlyEnabled           = loadBool(@"fly", false);
+    isLowGravEnabled       = loadBool(@"lowgrav", false);
     isCustomPlateEnabled   = loadBool(@"plateEnabled", false);
     isAutoMoneyEnabled     = loadBool(@"automoney", false);
     customMoneyAmount      = loadInt(@"moneyAmount", 100000000);
@@ -811,6 +914,9 @@ static void InstallEverything(uintptr_t b) {
     pm_getMoney               = (int(*)(void*))(b + 0x5A4346C);
     pm_syncWithServer         = (void(*)(void*))(b + 0x5A2DF80);
     pm_addMoney               = (void(*)(void*,int))(b + 0x5A43A2C);
+    ts_get                    = (float(*)(void))(b + 0x67718D8);   // get_timeScale (teshis)
+    rb_getVel                 = (void(*)(void*,Vec3*))(b + 0x6837B7C); // get_linearVelocity_Injected
+    rb_setVel                 = (void(*)(void*,Vec3*))(b + 0x6837C88); // set_linearVelocity_Injected
 
     safeHook((void*)(b + 0x6771918), (void*)h_setTimeScale,  (void**)&o_setTimeScale,     "set_timeScale");
     safeHook((void*)(b + 0x5938844), (void*)h_closeConnection,(void**)&o_closeConnection, "CloseConnection");
@@ -836,7 +942,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v21.1 basladi, UnityFramework araniyor...");
+    FLog(@"v21.5 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
