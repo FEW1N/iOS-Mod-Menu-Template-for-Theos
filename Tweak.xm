@@ -7,40 +7,37 @@
 #include <dlfcn.h>
 
 // ============================================================
-//  v20.0 CLEAN - FEW1N MOD MENU
-//  DreamRoadMultiplayer (1.4.1) | Il2Cpp / UnityFramework
+//  v21.0 - FEW1N MOD MENU
+//  DreamRoadMultiplayer | Unity 6 (6000.3.0b1) | Metadata v39
 // ------------------------------------------------------------
-//  Bu surumde SADECE test edilip dogrulanmis, calisan ozellikler var.
-//  Calismayan/arabayi bozan hileler (RCCP motor gucu, maks hiz,
-//  ham super hiz) KALDIRILDI - cunku oyuncu arabasi CarDriveSystem
-//  kullaniyor, o hileler RCCP'ye yaziyordu (yanlis sistem).
-//  Hiz artik iGameGod gibi Time.timeScale ile yapiliyor (tek calisan yol).
+//  ONEMLI: Oyun Unity 6'ya guncellendi + isim obfuscation eklendi.
+//  Tum offsetler YENI dump.cs'ten (metadata v39) cikarilip, uye
+//  isimleri karisik oldugu icin YAPIYA/imzaya gore eslendi.
 // ============================================================
-//  OFFSET TABLE (dump.cs ile birebir dogrulandi)
+//  OFFSET TABLE (yeni Unity6 dump, dogrulandi)
 // ------------------------------------------------------------
-// Time.set_timeScale(float)                [STATIC]   -> 0x6771BDC
-// PhotonNetwork.CloseConnection(Player)    [STATIC]   -> 0x5938B50
-// PhotonNetwork.set_NickName(string)       [STATIC]   -> 0x5933C4C
-// ChatManager.get_Instance()               [STATIC]   -> 0x31A6234
-// ChatManager.Send(string)                 [INSTANCE] -> 0x31A6338
-// CarNitro.get_nitroAmount()               [INSTANCE] -> 0x54CFF50
-// CarNitro.set_nitroAmount(float)          [INSTANCE] -> 0x54CFF58
-// CarDriveSystem.Move(f,f,f,f)             [INSTANCE] -> 0x54CCBDC  (per-frame timeScale zorlama)
-// PlateVariant.Change(PlateHolder)         [INSTANCE] -> 0x54EA338  (c@0x0, t@0x8)
-// HR_UI_RoomListLine.Connect()             [INSTANCE] -> 0x54B3430  (password @ self+0x50)
-// HR_PhotonLobbyManager.get_Instance()     [STATIC]   -> 0x54A81D4  (passwordInput@+0x50, passwordOnConnectInput@+0x60)
-// TMP_InputField.set_text(string)          [INSTANCE] -> 0x65F4F8C
-// PlayerManager.get_Instance()             [STATIC]   -> 0x5A2E138
-// PlayerManager.get_Money()                [INSTANCE] -> 0x5A43784
-// PlayerManager.AddMoney(int)              [INSTANCE] -> 0x5A43D44
-// PlayerManager.SyncWithServer()           [INSTANCE] -> 0x5A2E298
-// PlayerManager.UpdateNicknameInternal(str)[INSTANCE] -> 0x5A3E0EC
+// Time.set_timeScale(float)                -> 0x6771918
+// PhotonNetwork.CloseConnection(Player)    -> 0x5938844
+// PhotonNetwork.set_NickName(string)       -> 0x5933940
+// ChatManager.get_Instance()               -> 0x31A6168
+// ChatManager.Send(string)                 -> 0x31A626C
+// CarNitro.get_nitroAmount() [obf: fda]    -> 0x54CFE14
+// CarNitro.set_nitroAmount(float)[obf: fdb]-> 0x54CFE1C
+// CarDriveSystem.Move(f,f,f,f) [obf: fca]  -> 0x54CCAA0
+// PlateVariant.Change(PlateHolder)[obf:gal]-> 0x54EA1FC   (c@0x0, t@0x8)
+// HR_UI_RoomListLine.Connect() [obf: elv]  -> 0x54B32F4   (password @ self+0x50)
+// HR_PhotonLobbyManager.get_Instance()[eke]-> 0x54A8098   (passwordInput@+0x50, passwordOnConnectInput@+0x60)
+// TMP_InputField.set_text(string)          -> 0x65F4CC8
+// PlayerManager.get_Instance() [obf: ggn]  -> 0x5A2DE20
+// PlayerManager.get_Money()    [obf: ggx]  -> 0x5A4346C
+// PlayerManager.AddMoney(int)  [obf: ghm]  -> 0x5A43A2C
+// PlayerManager.SyncWithServer()[obf: ghj] -> 0x5A2DF80
+// PlayerManager.UpdateNicknameInternal(str)[ghn] -> 0x5A3DDD4
 // ============================================================
 
-// ===== STRUCT =====
-struct PlateHolder { void* c; void* t; };   // c@0x0 (string), t@0x8 (string)
+struct PlateHolder { void* c; void* t; };   // c@0x0, t@0x8
 
-// ===== PERSIST (NSUserDefaults) =====
+// ===== PERSIST =====
 #define DEF_SUITE @"com.few1n.dreamroadmod"
 static NSUserDefaults* defs(void) {
     static NSUserDefaults* d = nil;
@@ -55,13 +52,13 @@ static void saveStr(NSString* k, NSString* v) { if (v) [defs() setObject:v forKe
 static NSString* loadStr(NSString* k, NSString* def) { NSString* s=[defs() stringForKey:k]; return s?:def; }
 
 // ===== STATE =====
-static int  speedMode = 1;                 // 1 / 2 / 3 / 5  (timeScale)
+static int  speedMode = 1;
 static bool isInfiniteNitroEnabled = false;
 static bool isColorChatEnabled = false;
 static bool isSpamEnabled = false;
 static bool isBypassPasswordEnabled = true;
 static bool isCustomPlateEnabled = false;
-static bool isAutoMoneyEnabled = false;    // yaris odullerini buyut (server-sync yolu)
+static bool isAutoMoneyEnabled = false;
 static char customPlateText[64] = "FEW1N";
 static char chatSpamText[128] = "FEW1N MOD MENU!";
 static int  customMoneyAmount = 100000000;
@@ -74,6 +71,16 @@ static void* (*cached_il2cpp_string_new)(const char*) = NULL;
 static uintptr_t global_base = 0;
 static int hookSuccessCount = 0;
 static int hookFailCount = 0;
+
+// ===== EKRAN LOGU (menude gosterilir) =====
+static NSMutableArray<NSString*>* gLog = nil;
+static void FLog(NSString* line) {
+    if (!line) return;
+    NSLog(@"[FEW1N] %@", line);
+    if (!gLog) gLog = [NSMutableArray new];
+    [gLog addObject:line];
+    if (gLog.count > 100) [gLog removeObjectAtIndex:0];
+}
 
 static void* mkStr(NSString* s) {
     if (!cached_il2cpp_string_new)
@@ -89,14 +96,13 @@ static NSString* readStr(void* il2s) {
         return [NSString stringWithCharacters:(unichar*)((uintptr_t)il2s + 0x14) length:len];
     } @catch (...) { return @""; }
 }
-
 static void safeHook(void* target, void* replacement, void** original, const char* name) {
-    if (!target) { NSLog(@"[FEW1N] SKIP %s: NULL target", name); hookFailCount++; return; }
+    NSString* nm = [NSString stringWithUTF8String:name];
+    if (!target) { FLog([@"SKIP (NULL) " stringByAppendingString:nm]); hookFailCount++; return; }
     MSHookFunction(target, replacement, original);
-    NSLog(@"[FEW1N] OK hook %s at %p", name, target);
+    FLog([NSString stringWithFormat:@"OK  %@", nm]);
     hookSuccessCount++;
 }
-
 static UIWindow* getKeyWindow(void) {
     if (@available(iOS 15.0, *)) {
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
@@ -130,7 +136,7 @@ static int   (*pm_getMoney)(void* self) = NULL;
 static void  (*pm_syncWithServer)(void* self) = NULL;
 static void  (*pm_addMoney)(void* self, int amount) = NULL;
 
-// ===== TIME SCALE (iGameGod tarzi) =====
+// ===== TIME SCALE =====
 static void (*o_setTimeScale)(float) = NULL;
 static inline float targetScale(void) {
     if (speedMode == 2) return 2.0f;
@@ -142,7 +148,7 @@ static inline void enforceScale(void) {
     if (o_setTimeScale && speedMode > 1) o_setTimeScale(targetScale());
 }
 static void h_setTimeScale(float v) {
-    if (speedMode > 1) v = targetScale();      // oyun degistirse bile bizim degeri zorla
+    if (speedMode > 1) v = targetScale();
     if (o_setTimeScale) o_setTimeScale(v);
 }
 
@@ -162,12 +168,11 @@ static void h_setNitro(void* self, float value) {
     if (o_setNitro) o_setNitro(self, value);
 }
 
-// ===== CarDriveSystem.Move : SADECE per-frame timeScale zorlamasi =====
-// (Fizik alanlarina YAZMIYORUZ - o araba havaya kalkiyordu.)
+// ===== CarDriveSystem.Move : per-frame timeScale zorlama =====
 static void (*o_driveMove)(void*, float, float, float, float) = NULL;
-static void h_driveMove(void* self, float steering, float accel, float footbrake, float handbrake) {
+static void h_driveMove(void* self, float a, float b, float c, float d) {
     enforceScale();
-    if (o_driveMove) o_driveMove(self, steering, accel, footbrake, handbrake);
+    if (o_driveMove) o_driveMove(self, a, b, c, d);
 }
 
 // ===== CUSTOM PLATE =====
@@ -180,7 +185,7 @@ static void h_plateChange(void* self, struct PlateHolder holder) {
     if (o_plateChange) o_plateChange(self, holder);
 }
 
-// ===== CHAT (color + intercept) =====
+// ===== CHAT =====
 static void (*o_chatSend)(void*, void*) = NULL;
 static void h_chatSend(void* self, void* msg) {
     if (isColorChatEnabled && msg) {
@@ -202,9 +207,9 @@ static void h_roomConnect(void* self) {
             if (lobbyGetInst && roomPwd) {
                 void* lobby = lobbyGetInst();
                 if (lobby && tmp_set_text) {
-                    void* pOnConnect = *(void**)((uintptr_t)lobby + 0x60);  // passwordOnConnectInput
+                    void* pOnConnect = *(void**)((uintptr_t)lobby + 0x60);
                     if (pOnConnect) tmp_set_text(pOnConnect, roomPwd);
-                    void* pInput = *(void**)((uintptr_t)lobby + 0x50);      // passwordInput
+                    void* pInput = *(void**)((uintptr_t)lobby + 0x50);
                     if (pInput) tmp_set_text(pInput, roomPwd);
                 }
             }
@@ -213,7 +218,7 @@ static void h_roomConnect(void* self) {
     if (o_roomConnect) o_roomConnect(self);
 }
 
-// ===== MONEY (yaris odulunu buyut - server-sync yolu) =====
+// ===== MONEY =====
 static void (*o_addMoney)(void*, int) = NULL;
 static void h_addMoney(void* self, int amount) {
     if (isAutoMoneyEnabled && amount > 0) amount = customMoneyAmount;
@@ -244,6 +249,8 @@ static void h_addMoney(void* self, int amount) {
 @property (nonatomic, strong) UIButton *plateBtn;
 @property (nonatomic, strong) UIButton *nameBtn;
 @property (nonatomic, strong) UIButton *moneyBtn;
+@property (nonatomic, strong) UIView *logOverlay;
+@property (nonatomic, strong) UITextView *logText;
 + (instancetype)shared;
 - (void)build;
 @end
@@ -269,12 +276,11 @@ static void h_addMoney(void* self, int amount) {
     self.toggleViews = [NSMutableDictionary new];
     self.speedBtns = [NSMutableDictionary new];
 
-    // ---- FAB ----
+    // FAB
     self.fab = [UIButton buttonWithType:UIButtonTypeCustom];
     self.fab.frame = CGRectMake(16, 100, 56, 56);
     self.fab.layer.cornerRadius = 28;
     self.fab.clipsToBounds = NO;
-    // nabiz halkasi
     UIView *pulse = [[UIView alloc] initWithFrame:self.fab.bounds];
     pulse.layer.cornerRadius = 28; pulse.backgroundColor = C_CYAN;
     pulse.alpha = 0.4; pulse.userInteractionEnabled = NO;
@@ -299,8 +305,10 @@ static void h_addMoney(void* self, int amount) {
     [self.fab addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)]];
     [w addSubview:self.fab];
 
-    // ---- PANEL ----
-    CGFloat pw = 310, ph = 600;
+    // PANEL - ekrana sigacak sekilde dinamik yukseklik (landscape'te tasmasin)
+    CGFloat pw = 310;
+    CGFloat ph = MIN(600.0, w.bounds.size.height - 30.0);
+    if (ph < 260) ph = 260;
     self.panel = [[UIView alloc] initWithFrame:CGRectMake((w.bounds.size.width-pw)/2, (w.bounds.size.height-ph)/2, pw, ph)];
     self.panel.backgroundColor = C_BG;
     self.panel.layer.cornerRadius = 28;
@@ -312,14 +320,13 @@ static void h_addMoney(void* self, int amount) {
     self.panel.clipsToBounds = YES;
     self.panel.hidden = YES; self.panel.alpha = 0;
     self.panel.transform = CGAffineTransformMakeScale(0.85, 0.85);
-
     UIVisualEffectView *blurV = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleDark]];
     blurV.frame = self.panel.bounds;
     blurV.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.panel insertSubview:blurV atIndex:0];
     [self.panel addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)]];
 
-    // ---- HEADER ----
+    // HEADER
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0,0,pw,60)];
     header.backgroundColor = [UIColor colorWithWhite:0 alpha:0.2];
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16,10,pw-80,26)];
@@ -327,7 +334,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v20.0 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v21.1 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -346,7 +353,7 @@ static void h_addMoney(void* self, int amount) {
     [header addSubview:line];
     [self.panel addSubview:header];
 
-    // ---- SCROLL ----
+    // SCROLL
     self.scrollView = [[UIScrollView alloc] initWithFrame:CGRectMake(0,60,pw,ph-60)];
     self.scrollView.showsVerticalScrollIndicator = NO;
     [self.panel addSubview:self.scrollView];
@@ -355,7 +362,6 @@ static void h_addMoney(void* self, int amount) {
 
     CGFloat y = 12;
 
-    // ==== HIZ (timeScale) ====
     y = [self header:@"⚡  HIZ (timeScale)" atY:y];
     UIView *sr = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
     sr.backgroundColor = C_CARD; sr.layer.cornerRadius = 12;
@@ -376,51 +382,38 @@ static void h_addMoney(void* self, int amount) {
     [self.contentView addSubview:sr];
     y += 52;
     UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(16,y,pw-32,16)];
-    hint.text = @"Online icin 2x onerilir (5x kontrolu zorlastirir)";
+    hint.text = @"Online icin 2x onerilir";
     hint.textColor = C_SUB; hint.font = [UIFont systemFontOfSize:9];
     [self.contentView addSubview:hint];
     y += 22;
 
-    // ==== ARAC ====
     y = [self header:@"\U0001F3CE  ARAC" atY:y];
-    y = [self toggle:@"\U0001F4A8  Sonsuz Nitro" sub:@"Nitro hic bitmez (asil hiz kaynagi)" key:@"nitro" atY:y action:@selector(tapNitro)];
+    y = [self toggle:@"\U0001F4A8  Sonsuz Nitro" sub:@"Nitro hic bitmez" key:@"nitro" atY:y action:@selector(tapNitro)];
 
-    // ==== CHAT ====
     y = [self header:@"\U0001F4AC  CHAT" atY:y];
     y = [self toggle:@"\U0001F3A8  Renkli Chat" sub:@"[FEW1N] prefix + cyan" key:@"colorchat" atY:y action:@selector(tapColorChat)];
     y = [self toggle:@"\U0001F4E2  Chat Spam" sub:@"50ms araligla mesaj" key:@"chatspam" atY:y action:@selector(tapChatSpam)];
     y = [self actionRow:@"✏️  Spam Yazisini Duzenle" color:C_CYAN atY:y action:@selector(editSpam)];
 
-    // ==== PLAKA ====
     y = [self header:@"\U0001F522  PLAKA" atY:y];
     self.plateBtn = [self actionButtonRow:&y];
     [self.plateBtn addTarget:self action:@selector(editPlate) forControlEvents:UIControlEventTouchUpInside];
 
-    // ==== OYUNCU ====
     y = [self header:@"\U0001F4DB  OYUNCU" atY:y];
     self.nameBtn = [self actionButtonRow:&y];
     [self.nameBtn setTitle:@"\U0001F4DB  Isim Degistir" forState:UIControlStateNormal];
     [self.nameBtn setTitleColor:C_CYAN forState:UIControlStateNormal];
     [self.nameBtn addTarget:self action:@selector(changeName) forControlEvents:UIControlEventTouchUpInside];
 
-    // ==== ODA ====
     y = [self header:@"\U0001F511  ODA" atY:y];
     y = [self toggle:@"\U0001F513  Sifre Kirici" sub:@"Sifreli odalara gir" key:@"bypass" atY:y action:@selector(tapBypass)];
 
-    // ==== PARA ====
     y = [self header:@"\U0001F4B5  PARA (gecici - server kilitli)" atY:y];
     y = [self toggle:@"\U0001F4B0  Yaris Odulunu Buyut" sub:@"Kazandikca sunucuya yazmayi dener" key:@"automoney" atY:y action:@selector(tapAutoMoney)];
     self.moneyBtn = [self actionButtonRow:&y];
     [self.moneyBtn addTarget:self action:@selector(addMoneyTap) forControlEvents:UIControlEventTouchUpInside];
     y = [self actionRow:@"✏️  Para Miktarini Ayarla" color:C_CYAN atY:y action:@selector(editMoneyAmount)];
-    UILabel *mnote = [[UILabel alloc] initWithFrame:CGRectMake(16,y,pw-32,28)];
-    mnote.numberOfLines = 2;
-    mnote.text = @"Not: para sunucuda tutuluyor, tekrar girince sunucu\ndegeri geri gelebilir. Bu client tarafli bir sinir.";
-    mnote.textColor = C_SUB; mnote.font = [UIFont systemFontOfSize:8.5];
-    [self.contentView addSubview:mnote];
-    y += 32;
 
-    // ==== STATUS ====
     UIView *sc = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,36)];
     UILabel *sl = [[UILabel alloc] initWithFrame:CGRectMake(0,0,pw-24,36)];
     if (global_base != 0) {
@@ -439,6 +432,8 @@ static void h_addMoney(void* self, int amount) {
     [self.contentView addSubview:sc];
     y += 44;
 
+    y = [self actionRow:@"\U0001F4CB  Loglari Goster (hata teshisi)" color:C_CYAN atY:y action:@selector(showLog)];
+
     UILabel *foot = [[UILabel alloc] initWithFrame:CGRectMake(0,y+4,pw,24)];
     foot.text = @"made by few1n \U0001F5A4";
     foot.textColor = [UIColor colorWithWhite:0.3 alpha:1];
@@ -452,15 +447,12 @@ static void h_addMoney(void* self, int amount) {
     [w addSubview:self.panel];
     [self refreshUI];
 
-    // per-frame degil ama guvenli fallback: timeScale'i 0.3sn'de bir zorla
     if (tickTimer) { [tickTimer invalidate]; tickTimer = nil; }
     tickTimer = [NSTimer scheduledTimerWithTimeInterval:0.3 target:self selector:@selector(tick) userInfo:nil repeats:YES];
-
     if (isSpamEnabled && !spamTimer)
         spamTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 target:self selector:@selector(fireSpam) userInfo:nil repeats:YES];
 }
 
-// ===== UI HELPERS =====
 - (CGFloat)header:(NSString*)text atY:(CGFloat)y {
     UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(20,y,270,20)];
     l.text = text; l.textColor = C_CYAN;
@@ -583,10 +575,7 @@ static void h_addMoney(void* self, int amount) {
     [self.plateBtn setTitleColor:isCustomPlateEnabled ? C_ON : C_GOLD forState:UIControlStateNormal];
 }
 
-// ===== ACTIONS =====
-- (void)tick {
-    enforceScale();  // timeScale'i secilen degerde tut (araba disindayken de)
-}
+- (void)tick { enforceScale(); }
 
 - (void)toggle {
     if (self.panel.hidden) {
@@ -712,6 +701,64 @@ static void h_addMoney(void* self, int amount) {
     [self present:ac];
 }
 
+- (void)showLog {
+    UIWindow *w = getKeyWindow(); if (!w) return;
+    if (self.logOverlay) { [self.logOverlay removeFromSuperview]; self.logOverlay = nil; }
+
+    CGFloat W = w.bounds.size.width, H = w.bounds.size.height;
+    CGFloat ow = MIN(520.0, W - 40), oh = MIN(360.0, H - 40);
+    self.logOverlay = [[UIView alloc] initWithFrame:CGRectMake((W-ow)/2, (H-oh)/2, ow, oh)];
+    self.logOverlay.backgroundColor = [UIColor colorWithRed:0.03 green:0.04 blue:0.07 alpha:0.97];
+    self.logOverlay.layer.cornerRadius = 16;
+    self.logOverlay.layer.borderWidth = 1.5;
+    self.logOverlay.layer.borderColor = C_CYAN.CGColor;
+
+    UILabel *tl = [[UILabel alloc] initWithFrame:CGRectMake(14,10,ow-28,20)];
+    tl.text = @"FEW1N LOG"; tl.textColor = C_CYAN;
+    tl.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
+    [self.logOverlay addSubview:tl];
+
+    self.logText = [[UITextView alloc] initWithFrame:CGRectMake(10,36,ow-20,oh-86)];
+    self.logText.backgroundColor = [UIColor colorWithWhite:1 alpha:0.04];
+    self.logText.textColor = [UIColor colorWithRed:0.6 green:1.0 blue:0.7 alpha:1.0];
+    self.logText.font = [UIFont fontWithName:@"Menlo" size:9] ?: [UIFont systemFontOfSize:9];
+    self.logText.editable = NO;
+    self.logText.layer.cornerRadius = 8;
+    NSString *joined = gLog.count ? [gLog componentsJoinedByString:@"\n"] : @"(log yok - henuz calismadi)";
+    self.logText.text = joined;
+    [self.logOverlay addSubview:self.logText];
+
+    UIButton *copyB = [UIButton buttonWithType:UIButtonTypeSystem];
+    copyB.frame = CGRectMake(10, oh-42, (ow-30)/2, 32);
+    copyB.backgroundColor = C_CARD; copyB.layer.cornerRadius = 8;
+    [copyB setTitle:@"\U0001F4CB Panoya Kopyala" forState:UIControlStateNormal];
+    [copyB setTitleColor:C_CYAN forState:UIControlStateNormal];
+    copyB.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    [copyB addTarget:self action:@selector(copyLog) forControlEvents:UIControlEventTouchUpInside];
+    [self.logOverlay addSubview:copyB];
+
+    UIButton *closeB = [UIButton buttonWithType:UIButtonTypeSystem];
+    closeB.frame = CGRectMake(20+(ow-30)/2, oh-42, (ow-30)/2, 32);
+    closeB.backgroundColor = C_CARD; closeB.layer.cornerRadius = 8;
+    [closeB setTitle:@"Kapat" forState:UIControlStateNormal];
+    [closeB setTitleColor:C_RED forState:UIControlStateNormal];
+    closeB.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    [closeB addTarget:self action:@selector(closeLog) forControlEvents:UIControlEventTouchUpInside];
+    [self.logOverlay addSubview:closeB];
+
+    [w addSubview:self.logOverlay];
+}
+
+- (void)copyLog {
+    NSString *joined = gLog.count ? [gLog componentsJoinedByString:@"\n"] : @"(log yok)";
+    [UIPasteboard generalPasteboard].string = joined;
+    self.logText.text = [joined stringByAppendingString:@"\n\n>>> PANOYA KOPYALANDI <<<"];
+}
+
+- (void)closeLog {
+    if (self.logOverlay) { [self.logOverlay removeFromSuperview]; self.logOverlay = nil; }
+}
+
 - (void)present:(UIAlertController*)ac {
     UIWindow *w = getKeyWindow(); if (!w) return;
     UIViewController *vc = w.rootViewController; if (!vc) return;
@@ -722,9 +769,6 @@ static void h_addMoney(void* self, int amount) {
 
 @end
 
-// =============================================================
-//  Ayarlari geri yukle
-// =============================================================
 static void restoreSettings(void) {
     speedMode              = loadInt(@"speedMode", 1);
     isInfiniteNitroEnabled = loadBool(@"nitro", false);
@@ -740,9 +784,6 @@ static void restoreSettings(void) {
     strncpy(chatSpamText, st.UTF8String, sizeof(chatSpamText)-1); chatSpamText[sizeof(chatSpamText)-1]='\0';
 }
 
-// =============================================================
-//  Base address
-// =============================================================
 static uintptr_t GetUnityFrameworkBase(void) {
     uint32_t count = _dyld_image_count();
     for (uint32_t i=0;i<count;i++) {
@@ -758,47 +799,44 @@ static uintptr_t GetUnityFrameworkBase(void) {
 
 static void InstallEverything(uintptr_t b) {
     global_base = b;
-    NSLog(@"[FEW1N] Base 0x%lX", (unsigned long)b);
+    FLog([NSString stringWithFormat:@"Base bulundu: 0x%lX", (unsigned long)b]);
 
-    chatGetInst               = (void*(*)(void))(b + 0x31A6234);
-    chatSend                  = (void(*)(void*,void*))(b + 0x31A6338);
-    tmp_set_text              = (void(*)(void*,void*))(b + 0x65F4F8C);
-    pn_setNickName            = (void(*)(void*))(b + 0x5933C4C);
-    lobbyGetInst              = (void*(*)(void))(b + 0x54A81D4);
-    playerManagerGetInst      = (void*(*)(void))(b + 0x5A2E138);
-    pm_updateNicknameInternal = (void(*)(void*,void*))(b + 0x5A3E0EC);
-    pm_getMoney               = (int(*)(void*))(b + 0x5A43784);
-    pm_syncWithServer         = (void(*)(void*))(b + 0x5A2E298);
-    pm_addMoney               = (void(*)(void*,int))(b + 0x5A43D44);
+    chatGetInst               = (void*(*)(void))(b + 0x31A6168);
+    chatSend                  = (void(*)(void*,void*))(b + 0x31A626C);
+    tmp_set_text              = (void(*)(void*,void*))(b + 0x65F4CC8);
+    pn_setNickName            = (void(*)(void*))(b + 0x5933940);
+    lobbyGetInst              = (void*(*)(void))(b + 0x54A8098);
+    playerManagerGetInst      = (void*(*)(void))(b + 0x5A2DE20);
+    pm_updateNicknameInternal = (void(*)(void*,void*))(b + 0x5A3DDD4);
+    pm_getMoney               = (int(*)(void*))(b + 0x5A4346C);
+    pm_syncWithServer         = (void(*)(void*))(b + 0x5A2DF80);
+    pm_addMoney               = (void(*)(void*,int))(b + 0x5A43A2C);
 
-    safeHook((void*)(b + 0x6771BDC), (void*)h_setTimeScale,  (void**)&o_setTimeScale,     "Time.set_timeScale");
-    safeHook((void*)(b + 0x5938B50), (void*)h_closeConnection,(void**)&o_closeConnection, "PhotonNetwork.CloseConnection");
-    safeHook((void*)(b + 0x54CFF50), (void*)h_getNitro,       (void**)&o_getNitro,        "CarNitro.get_nitroAmount");
-    safeHook((void*)(b + 0x54CFF58), (void*)h_setNitro,       (void**)&o_setNitro,        "CarNitro.set_nitroAmount");
-    safeHook((void*)(b + 0x54CCBDC), (void*)h_driveMove,      (void**)&o_driveMove,       "CarDriveSystem.Move");
-    safeHook((void*)(b + 0x54EA338), (void*)h_plateChange,    (void**)&o_plateChange,     "PlateVariant.Change");
-    safeHook((void*)(b + 0x31A6338), (void*)h_chatSend,       (void**)&o_chatSend,        "ChatManager.Send");
-    safeHook((void*)(b + 0x54B3430), (void*)h_roomConnect,    (void**)&o_roomConnect,     "HR_UI_RoomListLine.Connect");
-    safeHook((void*)(b + 0x5A43D44), (void*)h_addMoney,       (void**)&o_addMoney,        "PlayerManager.AddMoney");
+    safeHook((void*)(b + 0x6771918), (void*)h_setTimeScale,  (void**)&o_setTimeScale,     "set_timeScale");
+    safeHook((void*)(b + 0x5938844), (void*)h_closeConnection,(void**)&o_closeConnection, "CloseConnection");
+    safeHook((void*)(b + 0x54CFE14), (void*)h_getNitro,       (void**)&o_getNitro,        "get_nitroAmount");
+    safeHook((void*)(b + 0x54CFE1C), (void*)h_setNitro,       (void**)&o_setNitro,        "set_nitroAmount");
+    safeHook((void*)(b + 0x54CCAA0), (void*)h_driveMove,      (void**)&o_driveMove,       "CarDriveSystem.Move");
+    safeHook((void*)(b + 0x54EA1FC), (void*)h_plateChange,    (void**)&o_plateChange,     "PlateVariant.Change");
+    safeHook((void*)(b + 0x31A626C), (void*)h_chatSend,       (void**)&o_chatSend,        "ChatManager.Send");
+    safeHook((void*)(b + 0x54B32F4), (void*)h_roomConnect,    (void**)&o_roomConnect,     "RoomListLine.Connect");
+    safeHook((void*)(b + 0x5A43A2C), (void*)h_addMoney,       (void**)&o_addMoney,        "PlayerManager.AddMoney");
 
-    NSLog(@"[FEW1N] %d hooks OK, %d failed", hookSuccessCount, hookFailCount);
+    FLog([NSString stringWithFormat:@"Bitti: %d hook OK, %d fail", hookSuccessCount, hookFailCount]);
     [[FEW1NMenu shared] build];
 }
 
-// =============================================================
-//  Constructor - bloksuz C poll (retain-cycle yok)
-// =============================================================
 static int few1n_attempts = 0;
 static void few1n_poll(void) {
     few1n_attempts++;
     uintptr_t b = GetUnityFrameworkBase();
     if (b != 0) { InstallEverything(b); return; }
-    if (few1n_attempts >= 80) { NSLog(@"[FEW1N] UnityFramework yok, menu hooksuz aciliyor"); [[FEW1NMenu shared] build]; return; }
+    if (few1n_attempts >= 80) { FLog(@"UnityFramework BULUNAMADI (80 deneme)"); [[FEW1NMenu shared] build]; return; }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
 
 %ctor {
-    NSLog(@"[FEW1N] v20.0 ctor @ %@", [NSDate date]);
+    FLog(@"v21.1 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
