@@ -136,6 +136,12 @@ static int   (*pm_getMoney)(void* self) = NULL;
 static void  (*pm_syncWithServer)(void* self) = NULL;
 static void  (*pm_addMoney)(void* self, int amount) = NULL;
 
+// ===== HIZ TESHIS / YARDIMCILAR =====
+static float (*ts_get)(void) = NULL;     // Time.get_timeScale
+static void* diagDrive = NULL;
+static float diagCurSpd = 0, diagTopSpd = 0;
+static float g_origTop = 0;
+
 // ===== TIME SCALE =====
 static void (*o_setTimeScale)(float) = NULL;
 static inline float targetScale(void) {
@@ -168,10 +174,30 @@ static void h_setNitro(void* self, float value) {
     if (o_setNitro) o_setNitro(self, value);
 }
 
-// ===== CarDriveSystem.Move : per-frame timeScale zorlama =====
+// ===== CarDriveSystem.Move : hiz hilesi (tam gaz + topSpeed) + teshis =====
+// a=steering, b=accel(0..1), c=footbrake, d=handbrake
+// topSpeed@0x98, currentSpeed@0x9C  (public, isimleri korundu)
 static void (*o_driveMove)(void*, float, float, float, float) = NULL;
 static void h_driveMove(void* self, float a, float b, float c, float d) {
     enforceScale();
+    if (self) {
+        @try {
+            diagDrive  = self;
+            diagCurSpd = *(float*)((uintptr_t)self + 0x9C);   // currentSpeed
+            diagTopSpd = *(float*)((uintptr_t)self + 0x98);   // topSpeed
+            if (speedMode > 1) {
+                // orijinal topSpeed'i bir kez sakla (compound olmasin)
+                if (g_origTop <= 0.0f && diagTopSpd > 0.0f && diagTopSpd < 1000.0f)
+                    g_origTop = diagTopSpd;
+                float base = (g_origTop > 0.0f) ? g_origTop : 200.0f;
+                *(float*)((uintptr_t)self + 0x98) = base * targetScale();  // topSpeed yukselt (mutlak, compound yok)
+                if (c <= 0.0f && d <= 0.0f) b = 1.0f;                       // fren yoksa TAM GAZ (kuvvet yok -> araba kalkmaz)
+            } else if (g_origTop > 0.0f) {
+                *(float*)((uintptr_t)self + 0x98) = g_origTop;             // kapaninca topSpeed'i eski haline dondur
+                g_origTop = 0.0f;
+            }
+        } @catch (...) {}
+    }
     if (o_driveMove) o_driveMove(self, a, b, c, d);
 }
 
@@ -334,7 +360,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v21.1 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v21.2 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -575,7 +601,17 @@ static void h_addMoney(void* self, int amount) {
     [self.plateBtn setTitleColor:isCustomPlateEnabled ? C_ON : C_GOLD forState:UIControlStateNormal];
 }
 
-- (void)tick { enforceScale(); }
+- (void)tick {
+    enforceScale();
+    // her ~2 sn'de bir canli hiz teshisini loga yaz
+    static int tc = 0;
+    if (++tc >= 7) {
+        tc = 0;
+        float ts = ts_get ? ts_get() : -1.0f;
+        FLog([NSString stringWithFormat:@"[HIZ] mode=%dx  timeScale=%.2f  curSpd=%.1f  topSpd=%.1f",
+              speedMode, ts, diagCurSpd, diagTopSpd]);
+    }
+}
 
 - (void)toggle {
     if (self.panel.hidden) {
@@ -811,6 +847,7 @@ static void InstallEverything(uintptr_t b) {
     pm_getMoney               = (int(*)(void*))(b + 0x5A4346C);
     pm_syncWithServer         = (void(*)(void*))(b + 0x5A2DF80);
     pm_addMoney               = (void(*)(void*,int))(b + 0x5A43A2C);
+    ts_get                    = (float(*)(void))(b + 0x67718D8);   // get_timeScale (teshis)
 
     safeHook((void*)(b + 0x6771918), (void*)h_setTimeScale,  (void**)&o_setTimeScale,     "set_timeScale");
     safeHook((void*)(b + 0x5938844), (void*)h_closeConnection,(void**)&o_closeConnection, "CloseConnection");
@@ -836,7 +873,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v21.1 basladi, UnityFramework araniyor...");
+    FLog(@"v21.2 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
