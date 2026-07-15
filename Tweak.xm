@@ -86,6 +86,64 @@ static void FLog(NSString* line) {
     if (gLog.count > 100) [gLog removeObjectAtIndex:0];
 }
 
+// ===== IL2CPP API (iGameGod tarzi - isimle bul, runtime_invoke ile cagir) =====
+static void* (*i_domain_get)(void) = NULL;
+static void** (*i_domain_get_assemblies)(void*, unsigned long*) = NULL;
+static const void* (*i_assembly_get_image)(void*) = NULL;
+static void* (*i_class_from_name)(const void*, const char*, const char*) = NULL;
+static void* (*i_class_get_method_from_name)(void*, const char*, int) = NULL;
+static void* (*i_runtime_invoke)(void*, void*, void**, void**) = NULL;
+static void* (*i_thread_attach)(void*) = NULL;
+static void* (*i_domain_get_ptr)(void) = NULL;
+static void* g_mSetTS = NULL;   // set_timeScale MethodInfo*
+static void* g_mGetTS = NULL;   // get_timeScale MethodInfo*
+static bool  g_il2cppReady = false;
+
+static void few1n_initIl2cpp(void) {
+    i_domain_get                = (void*(*)(void))dlsym(RTLD_DEFAULT, "il2cpp_domain_get");
+    i_domain_get_assemblies     = (void**(*)(void*,unsigned long*))dlsym(RTLD_DEFAULT, "il2cpp_domain_get_assemblies");
+    i_assembly_get_image        = (const void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_assembly_get_image");
+    i_class_from_name           = (void*(*)(const void*,const char*,const char*))dlsym(RTLD_DEFAULT, "il2cpp_class_from_name");
+    i_class_get_method_from_name= (void*(*)(void*,const char*,int))dlsym(RTLD_DEFAULT, "il2cpp_class_get_method_from_name");
+    i_runtime_invoke            = (void*(*)(void*,void*,void**,void**))dlsym(RTLD_DEFAULT, "il2cpp_runtime_invoke");
+    i_thread_attach             = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_thread_attach");
+    if (!i_domain_get || !i_domain_get_assemblies || !i_assembly_get_image ||
+        !i_class_from_name || !i_class_get_method_from_name || !i_runtime_invoke) {
+        FLog(@"il2cpp API bulunamadi!"); return;
+    }
+    void* domain = i_domain_get();
+    if (i_thread_attach && domain) i_thread_attach(domain);   // bu thread'i il2cpp'e bagla
+    unsigned long n = 0;
+    void** asms = i_domain_get_assemblies(domain, &n);
+    FLog([NSString stringWithFormat:@"il2cpp: %lu assembly taraniyor", n]);
+    for (unsigned long i = 0; i < n; i++) {
+        const void* img = i_assembly_get_image(asms[i]);
+        if (!img) continue;
+        void* timeClass = i_class_from_name(img, "UnityEngine", "Time");
+        if (timeClass) {
+            g_mSetTS = i_class_get_method_from_name(timeClass, "set_timeScale", 1);
+            g_mGetTS = i_class_get_method_from_name(timeClass, "get_timeScale", 0);
+            FLog([NSString stringWithFormat:@"Time bulundu! set=%p get=%p", g_mSetTS, g_mGetTS]);
+            break;
+        }
+    }
+    g_il2cppReady = (g_mSetTS != NULL);
+    if (!g_il2cppReady) FLog(@"UnityEngine.Time bulunamadi");
+}
+
+static void setTimeScaleVal(float v) {
+    if (!i_runtime_invoke || !g_mSetTS) return;
+    float val = v;
+    void* params[1] = { &val };
+    i_runtime_invoke(g_mSetTS, NULL, params, NULL);
+}
+static float getTimeScaleVal(void) {
+    if (!i_runtime_invoke || !g_mGetTS) return -1.0f;
+    void* box = i_runtime_invoke(g_mGetTS, NULL, NULL, NULL);   // boxed float
+    if (!box) return -1.0f;
+    return *(float*)((uintptr_t)box + 0x10);                    // unbox
+}
+
 static void* mkStr(NSString* s) {
     if (!cached_il2cpp_string_new)
         cached_il2cpp_string_new = (void*(*)(const char*))dlsym(RTLD_DEFAULT, "il2cpp_string_new");
@@ -158,9 +216,14 @@ static inline float targetScale(void) {
     return 1.0f;
 }
 static inline void enforceScale(void) {
-    if (o_setTimeScale && speedMode > 1) o_setTimeScale(targetScale());
+    // iGameGod yontemi: il2cpp runtime_invoke ile set_timeScale (ham offset degil!)
+    if (speedMode > 1) {
+        if (g_il2cppReady) setTimeScaleVal(targetScale());
+        else if (o_setTimeScale) o_setTimeScale(targetScale());  // yedek
+    }
 }
 static void h_setTimeScale(float v) {
+    // Oyun timeScale'i 1'e resetlemeye calisirsa bizim degeri zorla
     if (speedMode > 1) v = targetScale();
     if (o_setTimeScale) o_setTimeScale(v);
 }
@@ -386,7 +449,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v21.5 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v22.0 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -670,7 +733,7 @@ static void h_addMoney(void* self, int amount) {
     static int tc = 0;
     if (++tc >= 7) {
         tc = 0;
-        float ts = ts_get ? ts_get() : -1.0f;
+        float ts = g_il2cppReady ? getTimeScaleVal() : (ts_get ? ts_get() : -1.0f);
         FLog([NSString stringWithFormat:@"[HIZ] mode=%dx TS=%.2f cur=%.1f top=%.1f vel=%.1f drive=%@",
               speedMode, ts, diagCurSpd, diagTopSpd, diagVel, diagDrive ? @"VAR" : @"YOK"]);
     }
@@ -903,6 +966,7 @@ static uintptr_t GetUnityFrameworkBase(void) {
 static void InstallEverything(uintptr_t b) {
     global_base = b;
     FLog([NSString stringWithFormat:@"Base bulundu: 0x%lX", (unsigned long)b]);
+    few1n_initIl2cpp();   // iGameGod tarzi Time.timeScale icin il2cpp API hazirla
 
     chatGetInst               = (void*(*)(void))(b + 0x31A6168);
     chatSend                  = (void(*)(void*,void*))(b + 0x31A626C);
@@ -914,9 +978,9 @@ static void InstallEverything(uintptr_t b) {
     pm_getMoney               = (int(*)(void*))(b + 0x5A4346C);
     pm_syncWithServer         = (void(*)(void*))(b + 0x5A2DF80);
     pm_addMoney               = (void(*)(void*,int))(b + 0x5A43A2C);
-    ts_get                    = (float(*)(void))(b + 0x67718D8);   // get_timeScale (teshis)
-    rb_getVel                 = (void(*)(void*,Vec3*))(b + 0x6837B7C); // get_linearVelocity_Injected
-    rb_setVel                 = (void(*)(void*,Vec3*))(b + 0x6837C88); // set_linearVelocity_Injected
+    ts_get                    = (float(*)(void))(b + 0x67718D8);
+    rb_getVel                 = (void(*)(void*,Vec3*))(b + 0x6837B7C);
+    rb_setVel                 = (void(*)(void*,Vec3*))(b + 0x6837C88);
 
     safeHook((void*)(b + 0x6771918), (void*)h_setTimeScale,  (void**)&o_setTimeScale,     "set_timeScale");
     safeHook((void*)(b + 0x5938844), (void*)h_closeConnection,(void**)&o_closeConnection, "CloseConnection");
@@ -942,7 +1006,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v21.5 basladi, UnityFramework araniyor...");
+    FLog(@"v22.0 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
