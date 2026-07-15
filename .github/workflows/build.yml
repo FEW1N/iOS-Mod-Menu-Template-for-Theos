@@ -41,9 +41,9 @@ jobs:
           Package: com.few1n.dreamroadmod
           Name: FEW1N Mod Menu
           Depends: mobilesubstrate, firmware (>= 14.0)
-          Version: 21.1
+          Version: 21.5
           Architecture: iphoneos-arm64
-          Description: FEW1N Premium Mod Menu v21.1 for DreamRoadMultiplayer (Unity6)
+          Description: FEW1N Premium Mod Menu v21.5 for DreamRoadMultiplayer (Unity6)
           Maintainer: few1n
           Author: few1n
           Section: Tweaks
@@ -79,7 +79,7 @@ jobs:
       - name: Rename Package
         run: |
           mkdir -p output
-          cp packages/*.deb output/FEW1NMod_21.1_${{ github.run_number }}.deb
+          cp packages/*.deb output/FEW1NMod_21.5_${{ github.run_number }}.deb
 
       - name: Extract dylib for sideloading
         run: |
