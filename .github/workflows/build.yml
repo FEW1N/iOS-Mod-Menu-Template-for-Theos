@@ -41,9 +41,9 @@ jobs:
           Package: com.few1n.dreamroadmod
           Name: FEW1N Mod Menu
           Depends: mobilesubstrate, firmware (>= 14.0)
-          Version: 21.5
+          Version: 22.7
           Architecture: iphoneos-arm64
-          Description: FEW1N Premium Mod Menu v21.5 for DreamRoadMultiplayer (Unity6)
+          Description: FEW1N Mod Menu v22.7 (Unity6) - Hiz(timeScale), Sonsuz Nitro, Ucus/Zipla/Dusuk Yercekimi, Renkli Chat, Chat Spam, ASCII+FEW1N HACK Animasyon, Rainbow Isim, Sifre Kirici, Ozel/Rich Text Oda + Fake Oda Spam, Oda Ismi Rich Text patch, Para (gecici), Log ekrani
           Maintainer: few1n
           Author: few1n
           Section: Tweaks
@@ -79,7 +79,7 @@ jobs:
       - name: Rename Package
         run: |
           mkdir -p output
-          cp packages/*.deb output/FEW1NMod_21.5_${{ github.run_number }}.deb
+          cp packages/*.deb output/FEW1NMod_22.7_${{ github.run_number }}.deb
 
       - name: Extract dylib for sideloading
         run: |
@@ -95,11 +95,11 @@ jobs:
       - name: Upload .deb (jailbreak)
         uses: actions/upload-artifact@v4
         with:
-          name: FEW1N-ModMenu-v21-deb-${{ github.run_number }}
+          name: FEW1N-ModMenu-v22.7-deb-${{ github.run_number }}
           path: output/*.deb
 
       - name: Upload .dylib (sideload)
         uses: actions/upload-artifact@v4
         with:
-          name: FEW1N-ModMenu-v21-dylib-${{ github.run_number }}
+          name: FEW1N-ModMenu-v22.7-dylib-${{ github.run_number }}
           path: output/FEW1NMod.dylib
