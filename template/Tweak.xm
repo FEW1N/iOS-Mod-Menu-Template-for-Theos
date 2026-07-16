@@ -70,6 +70,12 @@ static int  asciiFrameIdx = 0;          // mevcut kare
 static bool isRoomSpamEnabled = false;  // fake oda spam
 static char customRoomName[160] = "<b><color=#FF0000>FEW1N</color></b>";
 static int  roomSpamPhase = 0;          // 0=kur, 1=cik
+static int  roomSpamCount = 0;          // kurulan oda sayaci
+static int  roomSpamMaxCount = 0;       // hedef (0 = sinirsiz)
+static float roomSpamInterval = 1.5f;   // aralik (sn)
+static int  roomSpamTTL = 300000;       // oda acik kalma (ms)
+static bool roomSpamContinuous = true;  // surekli mod
+static int  spamStyle = 0;              // 0=duz 1=cerceveli 2=sembol 3=renkli
 static char customPlateText[64] = "FEW1N";
 static char chatSpamText[128] = "FEW1N MOD MENU!";
 static int  customMoneyAmount = 100000000;
@@ -105,6 +111,25 @@ static NSArray* asciiAnims(void) {
         @[@"<size=150%><color=#00FFFF><b>⚡ FEW1N HACK ⚡</b></color></size>",
           @"<size=150%><color=#FF00FF><b>⚡ FEW1N HACK ⚡</b></color></size>",
           @"<size=150%><color=#FFFF00><b>⚡ FEW1N HACK ⚡</b></color></size>"],
+        // Kutu cerceve (renksiz)
+        @[@"╔══════════╗", @"║  FEW1N   ║", @"║   HACK   ║", @"╚══════════╝"],
+        // Progress bar zengin
+        @[@"▰▱▱▱▱▱▱▱▱▱", @"▰▰▰▱▱▱▱▱▱▱", @"▰▰▰▰▰▱▱▱▱▱", @"▰▰▰▰▰▰▰▱▱▱", @"▰▰▰▰▰▰▰▰▰▰ FEW1N"],
+        // Suslu parantez
+        @[@"《 F 》", @"《 FE 》", @"《 FEW 》", @"《 FEW1 》", @"《 FEW1N 》", @"『 FEW1N HACK 』"],
+        // Pulse (buyuyup kuculen - renkli)
+        @[@"<size=80%><color=#FF0000><b>FEW1N</b></color></size>",
+          @"<size=110%><color=#FF6600><b>FEW1N</b></color></size>",
+          @"<size=140%><color=#FFCC00><b>⚡ FEW1N HACK ⚡</b></color></size>",
+          @"<size=110%><color=#FF6600><b>FEW1N</b></color></size>"],
+        // Matrix (yesil)
+        @[@"<color=#00FF00>01001 FEW1N 10110</color>",
+          @"<color=#00FF00>10110 FEW1N 01001</color>",
+          @"<color=#00FF00>█▓▒░ FEW1N ░▒▓█</color>"],
+        // Neon yanip sonme
+        @[@"<color=#00FFFF><b>『 FEW1N HACK 』</b></color>",
+          @"<color=#FF00FF><b>『 FEW1N HACK 』</b></color>",
+          @"<color=#FFFF00><b>『 FEW1N HACK 』</b></color>"],
     ];
 }
 
@@ -566,7 +591,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v22.7 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v23.1 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -629,6 +654,21 @@ static void h_addMoney(void* self, int amount) {
     y = [self toggle:@"\U0001F3A8  Renkli Chat" sub:@"[FEW1N] prefix + cyan" key:@"colorchat" atY:y action:@selector(tapColorChat)];
     y = [self toggle:@"\U0001F4E2  Chat Spam" sub:@"50ms araligla mesaj" key:@"chatspam" atY:y action:@selector(tapChatSpam)];
     y = [self actionRow:@"✏️  Spam Yazisini Duzenle" color:C_CYAN atY:y action:@selector(editSpam)];
+    y = [self actionRow:@"\U0001F9EA  Rich Text Test (chate gonder)" color:C_ACCENT atY:y action:@selector(richTextTest)];
+    {
+        UIView *ssrow = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
+        ssrow.backgroundColor = C_CARD; ssrow.layer.cornerRadius = 12;
+        UIButton *ssb = [UIButton buttonWithType:UIButtonTypeSystem];
+        ssb.frame = CGRectMake(0,0,pw-24,44);
+        NSArray *nm = @[@"Duz", @"Cerceveli", @"Semboller", @"Renkli"];
+        [ssb setTitle:[NSString stringWithFormat:@"\U0001F3AD Spam Stili: %@", nm[spamStyle % 4]] forState:UIControlStateNormal];
+        [ssb setTitleColor:C_ACCENT forState:UIControlStateNormal];
+        ssb.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+        [ssb addTarget:self action:@selector(pickSpamStyle:) forControlEvents:UIControlEventTouchUpInside];
+        [ssrow addSubview:ssb];
+        [self.contentView addSubview:ssrow];
+        y += 52;
+    }
     y = [self toggle:@"\U0001F3AC  ASCII Animasyon Spam" sub:@"Kare kare animasyon chate" key:@"asciianim" atY:y action:@selector(tapAsciiAnim)];
     {
         UIView *arow = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
@@ -654,12 +694,17 @@ static void h_addMoney(void* self, int amount) {
     [self.nameBtn setTitleColor:C_CYAN forState:UIControlStateNormal];
     [self.nameBtn addTarget:self action:@selector(changeName) forControlEvents:UIControlEventTouchUpInside];
     y = [self actionRow:@"\U0001F308  Rainbow Isim (Rich Text)" color:C_ACCENT atY:y action:@selector(rainbowName)];
+    y = [self actionRow:@"\U0001F3A8  Gradient Isim (Kirmizi-Mavi)" color:C_ACCENT atY:y action:@selector(gradientName)];
 
     y = [self header:@"\U0001F511  ODA" atY:y];
     y = [self toggle:@"\U0001F513  Sifre Kirici" sub:@"Sifreli odalara gir" key:@"bypass" atY:y action:@selector(tapBypass)];
     y = [self actionRow:@"\U0001F3E0  Ozel Isimli Oda Kur" color:C_GOLD atY:y action:@selector(createOneRoom)];
-    y = [self toggle:@"\U0001F4E5  Fake Oda Spam" sub:@"Kalici odalar birikir (EmptyRoomTtl)" key:@"roomspam" atY:y action:@selector(tapRoomSpam)];
+    y = [self toggle:@"\U0001F4E5  Fake Oda Spam" sub:@"Kalici odalar birikir" key:@"roomspam" atY:y action:@selector(tapRoomSpam)];
+    y = [self toggle:@"\U0001F504  Surekli Mod" sub:@"Kapatana kadar spam" key:@"roomcont" atY:y action:@selector(tapRoomContinuous)];
     y = [self actionRow:@"✏️  Oda Ismini Ayarla" color:C_CYAN atY:y action:@selector(editRoomName)];
+    y = [self actionRow:@"\U0001F4CA  Oda Sayisi (0=sinirsiz)" color:C_CYAN atY:y action:@selector(editRoomSpamCount)];
+    y = [self actionRow:@"⏱️  Oda Acik Kalma Suresi" color:C_CYAN atY:y action:@selector(editRoomTTL)];
+    y = [self actionRow:@"⏰  Spam Araligi" color:C_CYAN atY:y action:@selector(editRoomSpamInterval)];
 
     y = [self header:@"\U0001F4B5  PARA (gecici - server kilitli)" atY:y];
     y = [self toggle:@"\U0001F4B0  Yaris Odulunu Buyut" sub:@"Kazandikca sunucuya yazmayi dener" key:@"automoney" atY:y action:@selector(tapAutoMoney)];
@@ -819,6 +864,7 @@ static void h_addMoney(void* self, int amount) {
     [self setToggle:@"asciianim" on:isAsciiAnimEnabled];
     [self setToggle:@"bypass"    on:isBypassPasswordEnabled];
     [self setToggle:@"roomspam"  on:isRoomSpamEnabled];
+    [self setToggle:@"roomcont"  on:roomSpamContinuous];
     [self setToggle:@"automoney" on:isAutoMoneyEnabled];
 
     long m = -1;
@@ -927,9 +973,22 @@ static void h_addMoney(void* self, int amount) {
     @try {
         void* mgr = chatGetInst();
         if (!mgr) return;
-        void* s = mkStr([NSString stringWithUTF8String:chatSpamText]);
+        NSString *base = [NSString stringWithUTF8String:chatSpamText];
+        NSString *msg;
+        if (spamStyle == 1)      msg = [NSString stringWithFormat:@"═══ %@ ═══", base];
+        else if (spamStyle == 2) msg = [NSString stringWithFormat:@"★彡 %@ 彡★", base];
+        else if (spamStyle == 3) msg = [NSString stringWithFormat:@"<color=#00FFFF><b>★ %@ ★</b></color>", base];
+        else                     msg = base;
+        void* s = mkStr(msg);
         if (s) chatSend(mgr, s);
     } @catch (...) {}
+}
+
+- (void)pickSpamStyle:(UIButton*)b {
+    spamStyle = (spamStyle + 1) % 4;
+    saveInt(@"spamStyle", spamStyle);
+    NSArray *names = @[@"Duz", @"Cerceveli", @"Semboller", @"Renkli"];
+    [b setTitle:[NSString stringWithFormat:@"\U0001F3AD Spam Stili: %@", names[spamStyle]] forState:UIControlStateNormal];
 }
 
 - (void)fireAscii {
@@ -1038,7 +1097,12 @@ static void h_addMoney(void* self, int amount) {
 // ===== FAKE ODA SPAM =====
 - (void)createOneRoom {
     @try {
-        void* nameStr = mkStr([NSString stringWithUTF8String:customRoomName]);
+        // BENZERSIZ isim: Photon oda isimleri UNIQUE olmali, ayni isim -> CreateRoomFailed -> lobiye atar.
+        // Gorunmez sayac ekle (<alpha=#00>) -> her oda benzersiz ama ekranda ayni gorunur.
+        static int g_roomCounter = 0;
+        g_roomCounter++;
+        NSString *uniqName = [NSString stringWithFormat:@"%s<alpha=#00>%d", customRoomName, g_roomCounter];
+        void* nameStr = mkStr(uniqName);
         if (!nameStr) return;
         // KALICI oda: RoomOptions.EmptyRoomTtl ver -> sen cikinca oda silinmez, listede kalir
         if (pn_createRoom && i_object_new && g_roomOptionsClass) {
@@ -1047,7 +1111,7 @@ static void h_addMoney(void* self, int amount) {
                 *(bool*)((uintptr_t)opts + 0x10) = true;     // isVisible
                 *(bool*)((uintptr_t)opts + 0x11) = true;     // isOpen
                 *(int*) ((uintptr_t)opts + 0x14) = 8;        // MaxPlayers
-                *(int*) ((uintptr_t)opts + 0x1C) = 300000;   // EmptyRoomTtl (5 dk)
+                *(int*) ((uintptr_t)opts + 0x1C) = roomSpamTTL;   // EmptyRoomTtl (ayarlanabilir)
                 pn_createRoom(nameStr, opts, NULL, NULL);
                 return;
             }
@@ -1066,12 +1130,20 @@ static void h_addMoney(void* self, int amount) {
 }
 
 - (void)fireRoomSpam {
-    if (!lobbyGetInst) return;
+    if (!isRoomSpamEnabled || !lobbyGetInst) return;
     @try {
+        // Hedef sayiya ulasildiysa ve surekli mod kapaliysa dur
+        if (!roomSpamContinuous && roomSpamMaxCount > 0 && roomSpamCount >= roomSpamMaxCount) {
+            isRoomSpamEnabled = false;
+            if (roomSpamTimer) { [roomSpamTimer invalidate]; roomSpamTimer = nil; }
+            [self refreshUI];
+            return;
+        }
         void* lobby = lobbyGetInst();
         if (!lobby) return;
-        if (roomSpamPhase == 0) { [self createOneRoom]; roomSpamPhase = 1; }
+        if (roomSpamPhase == 0) { [self createOneRoom]; roomSpamCount++; roomSpamPhase = 1; }
         else { if (lobby_leaveRoom) lobby_leaveRoom(lobby); roomSpamPhase = 0; }
+        [self refreshUI];   // durum etiketini guncelle
     } @catch (...) {}
 }
 
@@ -1081,8 +1153,49 @@ static void h_addMoney(void* self, int amount) {
     if (roomSpamTimer) { [roomSpamTimer invalidate]; roomSpamTimer = nil; }
     if (isRoomSpamEnabled) {
         roomSpamPhase = 0;
-        roomSpamTimer = [NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(fireRoomSpam) userInfo:nil repeats:YES];
+        roomSpamCount = 0;   // sayaci sifirla
+        float iv = roomSpamInterval > 0.3f ? roomSpamInterval : 1.5f;
+        roomSpamTimer = [NSTimer scheduledTimerWithTimeInterval:iv target:self selector:@selector(fireRoomSpam) userInfo:nil repeats:YES];
     }
+    [self refreshUI];
+}
+
+- (void)editRoomSpamCount {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F4CA Oda Sayisi" message:@"Kac oda? (0 = sinirsiz)" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.keyboardType = UIKeyboardTypeNumberPad; tf.text = [NSString stringWithFormat:@"%d", roomSpamMaxCount]; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Kaydet" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        int v = [ac.textFields.firstObject.text intValue];
+        if (v >= 0) { roomSpamMaxCount = v; roomSpamContinuous = (v == 0); saveInt(@"roomMax", v); [self refreshUI]; }
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
+- (void)editRoomTTL {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⏱️ Oda Acik Kalma" message:@"Kac saniye acik kalsin?" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.keyboardType = UIKeyboardTypeNumberPad; tf.text = [NSString stringWithFormat:@"%d", roomSpamTTL/1000]; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Kaydet" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        int sec = [ac.textFields.firstObject.text intValue];
+        if (sec > 0) { if (sec > 300) sec = 300; roomSpamTTL = sec * 1000; saveInt(@"roomTTL", roomSpamTTL); }
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
+- (void)editRoomSpamInterval {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⏰ Spam Araligi" message:@"Kac saniyede bir? (0.3 - 5)" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.keyboardType = UIKeyboardTypeDecimalPad; tf.text = [NSString stringWithFormat:@"%.1f", roomSpamInterval]; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Kaydet" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        float v = [ac.textFields.firstObject.text floatValue];
+        if (v >= 0.3f && v <= 5.0f) { roomSpamInterval = v; saveInt(@"roomIv", (int)(v*100)); }
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
+- (void)tapRoomContinuous {
+    roomSpamContinuous = !roomSpamContinuous;
+    saveBool(@"roomcont", roomSpamContinuous);
     [self refreshUI];
 }
 
@@ -1096,6 +1209,55 @@ static void h_addMoney(void* self, int amount) {
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
     [self present:ac];
+}
+
+// Gradient isim: 2 renk arasi gecis (kirmizi->mavi)
+- (void)gradientName {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3A8 Gradient Isim"
+                                                               message:@"Isim yaz - kirmizidan maviye:" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.text = @"FEW1N"; tf.clearButtonMode = UITextFieldViewModeAlways; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *src = ac.textFields.firstObject.text;
+        if (src.length == 0 || !pn_setNickName) return;
+        NSUInteger n = src.length;
+        NSMutableString *rich = [NSMutableString string];
+        for (NSUInteger i = 0; i < n; i++) {
+            float t = (n > 1) ? (float)i/(n-1) : 0.0f;
+            int r = (int)(255*(1-t)), g = 0, bl = (int)(255*t);
+            NSString *ch = [src substringWithRange:NSMakeRange(i,1)];
+            [rich appendFormat:@"<color=#%02X%02X%02X><b>%@</b></color>", r, g, bl, ch];
+        }
+        void* ns = mkStr(rich);
+        if (ns) {
+            pn_setNickName(ns);
+            if (playerManagerGetInst && pm_updateNicknameInternal) {
+                @try { void* pm = playerManagerGetInst(); if (pm) pm_updateNicknameInternal(pm, ns); } @catch (...) {}
+            }
+            [self.nameBtn setTitle:@"\U0001F3A8 Gradient isim aktif ✅" forState:UIControlStateNormal];
+            [self.nameBtn setTitleColor:C_ON forState:UIControlStateNormal];
+        }
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
+// Rich text test: cesitli etiketleri chate gonder, hangileri render oluyor gor
+- (void)richTextTest {
+    if (!chatGetInst || !chatSend) return;
+    NSArray *tests = @[
+        @"<i>italik</i> <u>alti-cizili</u> <s>ustu-cizili</s>",
+        @"<mark=#FFFF0044>vurgu</mark> <sup>ust</sup><sub>alt</sub>",
+        @"<size=200%>DEV</size> normal <size=50%>kucuk</size>",
+        @"gizli:<alpha=#00>gizliyazi</alpha><alpha=#FF>-son",
+        @"<voffset=1em>yukari</voffset> <cspace=10>aralikli</cspace>"
+    ];
+    __block int i = 0;
+    for (NSString *t in tests) {
+        double delay = (i++) * 0.6;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            @try { void* mgr = chatGetInst(); void* s = mkStr(t); if (mgr && s) chatSend(mgr, s); } @catch (...) {}
+        });
+    }
 }
 
 - (void)editSpam {
@@ -1209,6 +1371,11 @@ static void restoreSettings(void) {
     isAsciiAnimEnabled     = loadBool(@"asciianim", false);
     asciiAnimIndex         = loadInt(@"asciiIdx", 0);
     isRoomSpamEnabled      = false;   // spam her acilista kapali baslasin (guvenlik)
+    roomSpamMaxCount       = loadInt(@"roomMax", 0);
+    roomSpamTTL            = loadInt(@"roomTTL", 300000);
+    roomSpamInterval       = loadInt(@"roomIv", 150) / 100.0f;
+    roomSpamContinuous     = loadBool(@"roomcont", true);
+    spamStyle              = loadInt(@"spamStyle", 0);
     NSString* rn = loadStr(@"roomName", @"<b><color=#FF0000>FEW1N</color></b>");
     strncpy(customRoomName, rn.UTF8String, sizeof(customRoomName)-1); customRoomName[sizeof(customRoomName)-1]='\0';
     isCustomPlateEnabled   = loadBool(@"plateEnabled", false);
@@ -1280,7 +1447,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v22.7 basladi, UnityFramework araniyor...");
+    FLog(@"v23.1 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
