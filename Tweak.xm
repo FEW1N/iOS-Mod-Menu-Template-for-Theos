@@ -253,6 +253,12 @@ static void setRichTextIl(void* tmp, bool on) {
     i_runtime_invoke(g_mSetRichText, tmp, params, NULL);
 }
 
+// Rigidbody ham Injected pointer'lari (rbGetVelIl/rbSetVelIl yedegi olarak kullanilir)
+static void (*rb_getVel)(void* self, Vec3* out) = NULL;   // get_linearVelocity_Injected
+static void (*rb_setVel)(void* self, Vec3* val) = NULL;   // set_linearVelocity_Injected
+static void (*rb_getPos)(void* self, Vec3* out) = NULL;   // get_position_Injected
+static void (*rb_setPos)(void* self, Vec3* val) = NULL;   // set_position_Injected
+
 // Rigidbody linearVelocity - il2cpp runtime_invoke ile (ham offset degil)
 static void rbGetVelIl(void* rb, Vec3* out) {
     out->x = out->y = out->z = 0;
@@ -346,10 +352,6 @@ static bool  (*pn_createRoom)(void* name, void* opts, void* lobby, void* users) 
 
 // ===== HIZ TESHIS / YARDIMCILAR =====
 static float (*ts_get)(void) = NULL;     // Time.get_timeScale
-static void (*rb_getVel)(void* self, Vec3* out) = NULL;   // Rigidbody.get_linearVelocity_Injected
-static void (*rb_setVel)(void* self, Vec3* val) = NULL;   // Rigidbody.set_linearVelocity_Injected
-static void (*rb_getPos)(void* self, Vec3* out) = NULL;   // Rigidbody.get_position_Injected
-static void (*rb_setPos)(void* self, Vec3* val) = NULL;   // Rigidbody.set_position_Injected
 static Vec3 g_savedPos = {0,0,0};
 static bool g_hasSavedPos = false;
 static void* diagDrive = NULL;
@@ -676,7 +678,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v23.7 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v23.8 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1587,7 +1589,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v23.7 basladi, UnityFramework araniyor...");
+    FLog(@"v23.8 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
