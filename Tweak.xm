@@ -149,6 +149,10 @@ static NSArray* asciiAnims(void) {
         // Rainbow border
         @[@"<color=#FF0000>▐</color><color=#FFFF00> FEW1N HACK </color><color=#00FFFF>▌</color>",
           @"<color=#00FF00>▐</color><color=#FF00FF> FEW1N HACK </color><color=#FF8800>▌</color>"],
+        // Kayan yazi (soldan saga akar)
+        @[@"FEW1N HACK", @" FEW1N HACK", @"  FEW1N HACK", @"   FEW1N HACK", @"    FEW1N HACK", @"     FEW1N HACK", @"      FEW1N HACK"],
+        // Kayan renkli ok
+        @[@"<color=#00FFFF>»</color>FEW1N", @"<color=#00FFFF>»»</color>FEW1N", @"<color=#00FFFF>»»»</color>FEW1N HACK", @"<color=#00FF00>»»»»</color>FEW1N HACK"],
     ];
 }
 
@@ -356,7 +360,7 @@ static Vec3 g_savedPos = {0,0,0};
 static bool g_hasSavedPos = false;
 static void* diagDrive = NULL;
 static float diagCurSpd = 0, diagTopSpd = 0, diagVel = 0;
-static long  fNitro = 0, fDrive = 0, fPlate = 0, fRoomLine = 0;  // hook tetiklenme sayaclari
+static long  fNitro = 0, fDrive = 0, fPlate = 0, fRoomLine = 0, fRccp = 0;  // hook tetiklenme sayaclari
 static float diagNitroVal = 0;
 static float g_origTop = 0;
 
@@ -451,6 +455,20 @@ static void h_driveMove(void* self, float a, float b, float c, float d) {
             }
         } @catch (...) {}
     }
+}
+
+// ===== RCCP araba (oyuncu bunu kullaniyor) - Rigidbody yakala =====
+// RCCP_MainComponent Rigidbody @ self+0x48
+static void (*o_rccpUpdate)(void*) = NULL;
+static void h_rccpUpdate(void* self) {
+    fRccp++;
+    if (self) {
+        @try {
+            void* rb = *(void**)((uintptr_t)self + 0x48);   // RCCP Rigidbody
+            if (rb) g_rb = rb;
+        } @catch (...) {}
+    }
+    if (o_rccpUpdate) o_rccpUpdate(self);
 }
 
 // ===== CUSTOM PLATE =====
@@ -678,7 +696,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v23.8 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v23.9 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1051,8 +1069,8 @@ static void h_addMoney(void* self, int amount) {
     if (++tc >= 7) {
         tc = 0;
         float ts = g_il2cppReady ? getTimeScaleVal() : (ts_get ? ts_get() : -1.0f);
-        FLog([NSString stringWithFormat:@"[DIAG] TS=%.2f | nitroHook=%ld drive=%ld plate=%ld",
-              ts, fNitro, fDrive, fPlate]);
+        FLog([NSString stringWithFormat:@"[DIAG] TS=%.2f | nitro=%ld drive=%ld plate=%ld RCCP=%ld",
+              ts, fNitro, fDrive, fPlate, fRccp]);
         FLog([NSString stringWithFormat:@"[DIAG] rb=%@ rbMethod=%@ nitroDeg=%.2f il2cpp=%@",
               g_rb ? @"VAR" : @"YOK", g_mRbSetVel ? @"VAR" : @"YOK", diagNitroVal, g_il2cppReady ? @"OK" : @"YOK"]);
     }
@@ -1566,6 +1584,7 @@ static void InstallEverything(uintptr_t b) {
     safeHook((void*)(b + 0x54CFE14), (void*)h_getNitro,       (void**)&o_getNitro,        "get_nitroAmount");
     safeHook((void*)(b + 0x54CFE1C), (void*)h_setNitro,       (void**)&o_setNitro,        "set_nitroAmount");
     safeHook((void*)(b + 0x54CCAA0), (void*)h_driveMove,      (void**)&o_driveMove,       "CarDriveSystem.Move");
+    safeHook((void*)(b + 0x59C4BCC), (void*)h_rccpUpdate,     (void**)&o_rccpUpdate,      "RCCP.Update(rb yakala)");
     safeHook((void*)(b + 0x54EA1FC), (void*)h_plateChange,    (void**)&o_plateChange,     "PlateVariant.Change");
     safeHook((void*)(b + 0x31A626C), (void*)h_chatSend,       (void**)&o_chatSend,        "ChatManager.Send");
     safeHook((void*)(b + 0x54B32F4), (void*)h_roomConnect,    (void**)&o_roomConnect,     "RoomListLine.Connect");
@@ -1589,7 +1608,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v23.8 basladi, UnityFramework araniyor...");
+    FLog(@"v23.9 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
