@@ -41,9 +41,9 @@ jobs:
           Package: com.few1n.dreamroadmod
           Name: FEW1N Mod Menu
           Depends: mobilesubstrate, firmware (>= 14.0)
-          Version: 23.7
+          Version: 23.8
           Architecture: iphoneos-arm64
-          Description: FEW1N Mod Menu v23.7 (Unity6) - Hiz, Nitro, Ucus/Zipla/DusukYercekimi, RenkliChat, ChatSpam(4 stil), 16 ASCII/FEW1N HACK Animasyon, RainbowIsim, SifreKirici, RenkliOda + Gelismis Fake Oda Spam(sayi/TTL/aralik/surekli), OdaIsmi RichText patch, Para, Log
+          Description: FEW1N Mod Menu v23.8 (Unity6) - Hiz, Nitro, Ucus/Zipla/DusukYercekimi, RenkliChat, ChatSpam(4 stil), 16 ASCII/FEW1N HACK Animasyon, RainbowIsim, SifreKirici, RenkliOda + Gelismis Fake Oda Spam(sayi/TTL/aralik/surekli), OdaIsmi RichText patch, Para, Log
           Maintainer: few1n
           Author: few1n
           Section: Tweaks
@@ -79,7 +79,7 @@ jobs:
       - name: Rename Package
         run: |
           mkdir -p output
-          cp packages/*.deb output/FEW1NMod_23.7_${{ github.run_number }}.deb
+          cp packages/*.deb output/FEW1NMod_23.8_${{ github.run_number }}.deb
 
       - name: Extract dylib for sideloading
         run: |
@@ -95,11 +95,11 @@ jobs:
       - name: Upload .deb (jailbreak)
         uses: actions/upload-artifact@v4
         with:
-          name: FEW1N-ModMenu-v23.7-deb-${{ github.run_number }}
+          name: FEW1N-ModMenu-v23.8-deb-${{ github.run_number }}
           path: output/*.deb
 
       - name: Upload .dylib (sideload)
         uses: actions/upload-artifact@v4
         with:
-          name: FEW1N-ModMenu-v23.7-dylib-${{ github.run_number }}
+          name: FEW1N-ModMenu-v23.8-dylib-${{ github.run_number }}
           path: output/FEW1NMod.dylib
