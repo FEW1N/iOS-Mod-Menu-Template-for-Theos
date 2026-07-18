@@ -343,6 +343,7 @@ static void* (*chatGetInst)(void) = NULL;
 static void  (*chatSend)(void* self, void* msg) = NULL;
 static void  (*tmp_set_text)(void* self, void* msg) = NULL;
 static void* (*tmp_get_text)(void* self) = NULL;   // TMP_InputField.get_text
+static void* (*rinfo_getName)(void* self) = NULL;  // RoomInfo.get_Name (ham oda ismi)
 static void  (*pn_setNickName)(void* name) = NULL;
 static void* (*lobbyGetInst)(void) = NULL;
 static void* (*playerManagerGetInst)(void) = NULL;
@@ -360,7 +361,7 @@ static Vec3 g_savedPos = {0,0,0};
 static bool g_hasSavedPos = false;
 static void* diagDrive = NULL;
 static float diagCurSpd = 0, diagTopSpd = 0, diagVel = 0;
-static long  fNitro = 0, fDrive = 0, fPlate = 0, fRoomLine = 0, fRccp = 0;  // hook tetiklenme sayaclari
+static long  fNitro = 0, fDrive = 0, fPlate = 0, fRoomLine = 0, fRccp = 0, fSmRCC = 0, fSmPUN = 0;  // hook tetiklenme sayaclari
 static float diagNitroVal = 0;
 static float g_origTop = 0;
 
@@ -471,6 +472,25 @@ static void h_rccpUpdate(void* self) {
     if (o_rccpUpdate) o_rccpUpdate(self);
 }
 
+// ===== SmoothSync (AGDAKI TUM ARABALAR - oyuncu dahil) : Rigidbody yakala =====
+// SmoothSyncRCC.rb @ 0xF8 (Rigidbody), carController @ 0xF0
+static void (*o_smRCC)(void*) = NULL;
+static void h_smRCC(void* self) {
+    fSmRCC++;
+    if (self) {
+        @try {
+            void* rb = *(void**)((uintptr_t)self + 0xF8);   // SmoothSyncRCC.rb
+            if (rb) g_rb = rb;
+        } @catch (...) {}
+    }
+    if (o_smRCC) o_smRCC(self);
+}
+static void (*o_smPUN)(void*) = NULL;
+static void h_smPUN(void* self) {
+    fSmPUN++;
+    if (o_smPUN) o_smPUN(self);
+}
+
 // ===== CUSTOM PLATE =====
 static void (*o_plateChange)(void*, struct PlateHolder) = NULL;
 static void h_plateChange(void* self, struct PlateHolder holder) {
@@ -526,8 +546,9 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
             void* nameText = *(void**)((uintptr_t)self + 0x20);    // RoomNameText (TMP_Text)
             if (nameText) {
                 if (g_mSetRichText) setRichTextIl(nameText, true); // richText ac
-                // HAM ismi geri yaz (buyuk harfe cevrilmemis, kucuk harf tag'ler) -> etiketler render olur
-                if (a && tmp_set_text) tmp_set_text(nameText, a);
+                // HAM ismi RoomInfo'dan al (buyuk harfe cevrilmemis, kucuk harf tag'ler) -> etiketler render olur
+                void* rawName = (f && rinfo_getName) ? rinfo_getName(f) : a;
+                if (rawName && tmp_set_text) tmp_set_text(nameText, rawName);
             }
             void* mapText = *(void**)((uintptr_t)self + 0x28);     // MapNameText
             if (mapText && g_mSetRichText) setRichTextIl(mapText, true);
@@ -691,12 +712,18 @@ static void h_addMoney(void* self, int amount) {
     // HEADER
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0,0,pw,60)];
     header.backgroundColor = [UIColor colorWithWhite:0 alpha:0.2];
+    CAGradientLayer *hgrad = [CAGradientLayer layer];
+    hgrad.frame = CGRectMake(0,0,pw,60);
+    hgrad.colors = @[(id)[UIColor colorWithRed:0.0 green:0.55 blue:0.75 alpha:0.35].CGColor,
+                     (id)[UIColor colorWithRed:0.35 green:0.15 blue:0.75 alpha:0.30].CGColor];
+    hgrad.startPoint = CGPointMake(0,0); hgrad.endPoint = CGPointMake(1,1);
+    [header.layer insertSublayer:hgrad atIndex:0];
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16,10,pw-80,26)];
     title.text = @"FEW1N MOD MENU"; title.textColor = [UIColor whiteColor];
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v23.9 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v24.4 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -807,6 +834,7 @@ static void h_addMoney(void* self, int amount) {
 
     y = [self header:@"\U0001F511  ODA" atY:y];
     y = [self toggle:@"\U0001F513  Sifre Kirici" sub:@"Sifreli odalara gir" key:@"bypass" atY:y action:@selector(tapBypass)];
+    y = [self actionRow:@"\U0001F3A8  Renkli Oda Ac (rich text)" color:C_ON atY:y action:@selector(createColoredRoom)];
     y = [self actionRow:@"\U0001F3E0  Ozel Isimli Oda Kur" color:C_GOLD atY:y action:@selector(createOneRoom)];
     y = [self toggle:@"\U0001F4E5  Fake Oda Spam" sub:@"Kalici odalar birikir" key:@"roomspam" atY:y action:@selector(tapRoomSpam)];
     y = [self toggle:@"\U0001F504  Surekli Mod" sub:@"Kapatana kadar spam" key:@"roomcont" atY:y action:@selector(tapRoomContinuous)];
@@ -867,11 +895,26 @@ static void h_addMoney(void* self, int amount) {
 }
 
 - (CGFloat)header:(NSString*)text atY:(CGFloat)y {
-    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(20,y,270,20)];
-    l.text = text; l.textColor = C_CYAN;
+    CGFloat pw = self.panel.bounds.size.width;
+    // sol aksан cubugu (neon)
+    UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(12, y+2, 4, 16)];
+    bar.backgroundColor = C_CYAN; bar.layer.cornerRadius = 2;
+    bar.layer.shadowColor = C_CYAN.CGColor; bar.layer.shadowRadius = 4;
+    bar.layer.shadowOpacity = 0.8; bar.layer.shadowOffset = CGSizeMake(0,0);
+    [self.contentView addSubview:bar];
+    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(24,y,pw-40,20)];
+    l.text = [text uppercaseString]; l.textColor = C_TEXT;
     l.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBlack];
     [self.contentView addSubview:l];
-    return y + 26;
+    // ince gradient ayirici cizgi
+    UIView *line = [[UIView alloc] initWithFrame:CGRectMake(12, y+22, pw-24, 1)];
+    CAGradientLayer *lg = [CAGradientLayer layer];
+    lg.frame = CGRectMake(0,0,pw-24,1);
+    lg.colors = @[(id)C_CYAN.CGColor, (id)[UIColor clearColor].CGColor];
+    lg.startPoint = CGPointMake(0,0.5); lg.endPoint = CGPointMake(1,0.5);
+    [line.layer addSublayer:lg];
+    [self.contentView addSubview:line];
+    return y + 30;
 }
 
 - (CGFloat)toggle:(NSString*)tl sub:(NSString*)sub key:(NSString*)key atY:(CGFloat)y action:(SEL)action {
@@ -1011,13 +1054,14 @@ static void h_addMoney(void* self, int amount) {
 }
 
 - (void)jumpTap {
+    FLog(g_rb ? @"ZIPLA basildi: rb VAR, uygulaniyor" : @"ZIPLA basildi: rb YOK! (once arabaya bin+sur)");
     if (g_rb) {
         @try {
             Vec3 v = {0,0,0};
             rbGetVelIl(g_rb, &v);
             v.y = 14.0f;                          // yukari itme (zipla)
             rbSetVelIl(g_rb, &v);
-        } @catch (...) {}
+        } @catch (NSException *e) { FLog([@"ZIPLA hata: " stringByAppendingString:e.reason ?: @"?"]); }
     }
 }
 
@@ -1069,8 +1113,8 @@ static void h_addMoney(void* self, int amount) {
     if (++tc >= 7) {
         tc = 0;
         float ts = g_il2cppReady ? getTimeScaleVal() : (ts_get ? ts_get() : -1.0f);
-        FLog([NSString stringWithFormat:@"[DIAG] TS=%.2f | nitro=%ld drive=%ld plate=%ld RCCP=%ld",
-              ts, fNitro, fDrive, fPlate, fRccp]);
+        FLog([NSString stringWithFormat:@"[DIAG] nitro=%ld drive=%ld plate=%ld RCCP=%ld smRCC=%ld smPUN=%ld",
+              fNitro, fDrive, fPlate, fRccp, fSmRCC, fSmPUN]);
         FLog([NSString stringWithFormat:@"[DIAG] rb=%@ rbMethod=%@ nitroDeg=%.2f il2cpp=%@",
               g_rb ? @"VAR" : @"YOK", g_mRbSetVel ? @"VAR" : @"YOK", diagNitroVal, g_il2cppReady ? @"OK" : @"YOK"]);
     }
@@ -1283,6 +1327,34 @@ static void h_addMoney(void* self, int amount) {
     } @catch (...) {}
 }
 
+// Ayri buton: rich text ismi sor + direkt renkli oda ac
+- (void)createColoredRoom {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3A8 Renkli Oda Ac"
+                                                               message:@"Oda ismi (rich text destekli):" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
+        tf.text = [NSString stringWithUTF8String:customRoomName];
+        tf.clearButtonMode = UITextFieldViewModeAlways;
+    }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"\U0001F3E0 Oda Ac" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *t = ac.textFields.firstObject.text;
+        if (t.length > 0) {
+            strncpy(customRoomName, t.UTF8String, sizeof(customRoomName)-1);
+            customRoomName[sizeof(customRoomName)-1]='\0';
+            saveStr(@"roomName", t);
+        }
+        [self createOneRoom];   // direkt kur (pn_createRoom, dogrulama atlanir)
+    }]];
+    // hazir renk sablonlari
+    [ac addAction:[UIAlertAction actionWithTitle:@"\U0001F308 Gokkusagi Sablonu" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        strncpy(customRoomName, "<b><color=#FF0000>F</color><color=#FF7F00>E</color><color=#FFFF00>W</color><color=#00FF00>1</color><color=#00FFFF>N</color></b>", sizeof(customRoomName)-1);
+        customRoomName[sizeof(customRoomName)-1]='\0';
+        saveStr(@"roomName", [NSString stringWithUTF8String:customRoomName]);
+        [self createOneRoom];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
 - (void)fireRoomSpam {
     if (!isRoomSpamEnabled || !lobbyGetInst) return;
     @try {
@@ -1308,7 +1380,7 @@ static void h_addMoney(void* self, int amount) {
     if (isRoomSpamEnabled) {
         roomSpamPhase = 0;
         roomSpamCount = 0;   // sayaci sifirla
-        float iv = roomSpamInterval > 0.3f ? roomSpamInterval : 1.5f;
+        float iv = roomSpamInterval >= 0.1f ? roomSpamInterval : 1.5f;
         roomSpamTimer = [NSTimer scheduledTimerWithTimeInterval:iv target:self selector:@selector(fireRoomSpam) userInfo:nil repeats:YES];
     }
     [self refreshUI];
@@ -1337,11 +1409,11 @@ static void h_addMoney(void* self, int amount) {
 }
 
 - (void)editRoomSpamInterval {
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⏰ Spam Araligi" message:@"Kac saniyede bir? (0.3 - 5)" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⏰ Spam Araligi" message:@"Kac saniyede bir? (0.1 = cok hizli, 5 = yavas)" preferredStyle:UIAlertControllerStyleAlert];
     [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.keyboardType = UIKeyboardTypeDecimalPad; tf.text = [NSString stringWithFormat:@"%.1f", roomSpamInterval]; }];
     [ac addAction:[UIAlertAction actionWithTitle:@"Kaydet" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         float v = [ac.textFields.firstObject.text floatValue];
-        if (v >= 0.3f && v <= 5.0f) { roomSpamInterval = v; saveInt(@"roomIv", (int)(v*100)); }
+        if (v >= 0.1f && v <= 5.0f) { roomSpamInterval = v; saveInt(@"roomIv", (int)(v*100)); }
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
     [self present:ac];
@@ -1470,8 +1542,24 @@ static void h_addMoney(void* self, int amount) {
     self.logText.font = [UIFont fontWithName:@"Menlo" size:9] ?: [UIFont systemFontOfSize:9];
     self.logText.editable = NO;
     self.logText.layer.cornerRadius = 8;
+    // === KAPSAMLI DURUM OZETI ===
+    NSMutableString *st = [NSMutableString string];
+    [st appendString:@"══════ FEW1N DURUM ══════\n"];
+    [st appendFormat:@"Base: 0x%lX | il2cpp: %@\n", (unsigned long)global_base, g_il2cppReady ? @"OK" : @"YOK"];
+    [st appendFormat:@"Hook: %d OK / %d FAIL\n", hookSuccessCount, hookFailCount];
+    [st appendString:@"── il2cpp metodlari ──\n"];
+    [st appendFormat:@"Time:%@ RB-vel:%@ RB-pos:%@\n", g_mSetTS?@"✓":@"✗", g_mRbSetVel?@"✓":@"✗", rb_setPos?@"✓":@"✗"];
+    [st appendFormat:@"TMP-rich:%@ RoomOpt:%@ CreateRoom:%@ RoomName:%@\n", g_mSetRichText?@"✓":@"✗", g_roomOptionsClass?@"✓":@"✗", pn_createRoom?@"✓":@"✗", rinfo_getName?@"✓":@"✗"];
+    [st appendString:@"── araba hook tetiklenme ──\n"];
+    [st appendFormat:@"nitro:%ld drive:%ld plate:%ld\nRCCP:%ld smRCC:%ld smPUN:%ld\n", fNitro, fDrive, fPlate, fRccp, fSmRCC, fSmPUN];
+    [st appendFormat:@"Rigidbody(g_rb): %@  %@\n", g_rb?@"YAKALANDI ✓":@"YOK ✗", g_rb?@"(zipla/ucus/isinla calisir)":@"(arabaya bin+sur)"];
+    [st appendString:@"── ozellik durumlari ──\n"];
+    [st appendFormat:@"Hiz:%dx Nitro:%@ Ucus:%@ DusukG:%@\n", speedMode, isInfiniteNitroEnabled?@"A":@"K", isFlyEnabled?@"A":@"K", isLowGravEnabled?@"A":@"K"];
+    [st appendFormat:@"RenkliChat:%@ Spam:%@ ASCII:%@ Sifre:%@\n", isColorChatEnabled?@"A":@"K", isSpamEnabled?@"A":@"K", isAsciiAnimEnabled?@"A":@"K", isBypassPasswordEnabled?@"A":@"K"];
+    [st appendFormat:@"OdaSpam:%@ (kurulan:%d) SurekliMod:%@\n", isRoomSpamEnabled?@"A":@"K", roomSpamCount, roomSpamContinuous?@"A":@"K"];
+    [st appendString:@"════════════════════════\n\n"];
     NSString *joined = gLog.count ? [gLog componentsJoinedByString:@"\n"] : @"(log yok - henuz calismadi)";
-    self.logText.text = joined;
+    self.logText.text = [st stringByAppendingString:joined];
     [self.logOverlay addSubview:self.logText];
 
     UIButton *copyB = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -1495,9 +1583,10 @@ static void h_addMoney(void* self, int amount) {
 }
 
 - (void)copyLog {
-    NSString *joined = gLog.count ? [gLog componentsJoinedByString:@"\n"] : @"(log yok)";
-    [UIPasteboard generalPasteboard].string = joined;
-    self.logText.text = [joined stringByAppendingString:@"\n\n>>> PANOYA KOPYALANDI <<<"];
+    // ekrandaki her seyi kopyala (durum ozeti + loglar)
+    NSString *full = self.logText.text ?: @"";
+    [UIPasteboard generalPasteboard].string = full;
+    self.logText.text = [full stringByAppendingString:@"\n\n>>> PANOYA KOPYALANDI <<<"];
 }
 
 - (void)closeLog {
@@ -1563,6 +1652,7 @@ static void InstallEverything(uintptr_t b) {
     chatSend                  = (void(*)(void*,void*))(b + 0x31A626C);
     tmp_set_text              = (void(*)(void*,void*))(b + 0x65F4CC8);
     tmp_get_text              = (void*(*)(void*))(b + 0x65F4CC0);
+    rinfo_getName             = (void*(*)(void*))(b + 0x59293A4);   // RoomInfo.get_Name
     pn_setNickName            = (void(*)(void*))(b + 0x5933940);
     lobbyGetInst              = (void*(*)(void))(b + 0x54A8098);
     playerManagerGetInst      = (void*(*)(void))(b + 0x5A2DE20);
@@ -1585,6 +1675,8 @@ static void InstallEverything(uintptr_t b) {
     safeHook((void*)(b + 0x54CFE1C), (void*)h_setNitro,       (void**)&o_setNitro,        "set_nitroAmount");
     safeHook((void*)(b + 0x54CCAA0), (void*)h_driveMove,      (void**)&o_driveMove,       "CarDriveSystem.Move");
     safeHook((void*)(b + 0x59C4BCC), (void*)h_rccpUpdate,     (void**)&o_rccpUpdate,      "RCCP.Update(rb yakala)");
+    safeHook((void*)(b + 0x5A57390), (void*)h_smRCC,          (void**)&o_smRCC,           "SmoothSyncRCC.Update(rb!)");
+    safeHook((void*)(b + 0x5A4F72C), (void*)h_smPUN,          (void**)&o_smPUN,           "SmoothSyncPUN2.Update");
     safeHook((void*)(b + 0x54EA1FC), (void*)h_plateChange,    (void**)&o_plateChange,     "PlateVariant.Change");
     safeHook((void*)(b + 0x31A626C), (void*)h_chatSend,       (void**)&o_chatSend,        "ChatManager.Send");
     safeHook((void*)(b + 0x54B32F4), (void*)h_roomConnect,    (void**)&o_roomConnect,     "RoomListLine.Connect");
@@ -1608,7 +1700,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v23.9 basladi, UnityFramework araniyor...");
+    FLog(@"v24.4 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
