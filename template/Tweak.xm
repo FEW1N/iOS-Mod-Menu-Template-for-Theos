@@ -187,6 +187,8 @@ static void* g_mSetTS = NULL;   // set_timeScale MethodInfo*
 static void* g_mGetTS = NULL;   // get_timeScale MethodInfo*
 static void* g_mRbGetVel = NULL; // Rigidbody.get_linearVelocity MethodInfo*
 static void* g_mRbSetVel = NULL; // Rigidbody.set_linearVelocity MethodInfo*
+static void* g_mRbGetPos = NULL; // Rigidbody.get_position MethodInfo*  (isinlanma icin)
+static void* g_mRbSetPos = NULL; // Rigidbody.set_position MethodInfo*
 static void* g_mSetRichText = NULL; // TMP_Text.set_richText MethodInfo* (oda ismi rich text acigi)
 static void* (*i_object_new)(void*) = NULL;   // il2cpp_object_new
 static void* g_roomOptionsClass = NULL;       // Photon.Realtime.RoomOptions Il2CppClass*
@@ -201,6 +203,14 @@ static void* g_mmhField   = NULL;   // 'iiz' static field
 static void* g_mSelectCar = NULL;
 static void* g_mNextCar   = NULL;
 static void* g_mPrevCar   = NULL;
+// ==== HOOKSUZ ARABA BULMA ====
+// MSHookFunction bu oyunda calismiyor (0 OK / 17 FAIL) -> hook yerine
+// UnityEngine.Object.FindObjectOfType(Type) ile arabayi her saniye ARIYORUZ.
+static void* (*i_class_get_type)(void*) = NULL;
+static void* (*i_type_get_object)(void*) = NULL;
+static void* g_mFindObjectOfType = NULL;   // UnityEngine.Object.FindObjectOfType(Type)
+static void* g_carDriveTypeObj   = NULL;   // typeof(CarDriveSystem)
+static void* g_carInputTypeObj   = NULL;   // typeof(CarPlayerInput)
 
 static void few1n_initIl2cpp(void) {
     i_domain_get                = (void*(*)(void))dlsym(RTLD_DEFAULT, "il2cpp_domain_get");
@@ -213,6 +223,8 @@ static void few1n_initIl2cpp(void) {
     i_object_new                = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_object_new");
     i_class_get_field_from_name = (void*(*)(void*,const char*))dlsym(RTLD_DEFAULT, "il2cpp_class_get_field_from_name");
     i_field_static_get_value    = (void(*)(void*,void*))dlsym(RTLD_DEFAULT, "il2cpp_field_static_get_value");
+    i_class_get_type            = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_class_get_type");
+    i_type_get_object           = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_type_get_object");
     if (!i_domain_get || !i_domain_get_assemblies || !i_assembly_get_image ||
         !i_class_from_name || !i_class_get_method_from_name || !i_runtime_invoke) {
         FLog(@"il2cpp API bulunamadi!"); return;
@@ -231,6 +243,31 @@ static void few1n_initIl2cpp(void) {
                 g_mSetTS = i_class_get_method_from_name(timeClass, "set_timeScale", 1);
                 g_mGetTS = i_class_get_method_from_name(timeClass, "get_timeScale", 0);
                 FLog([NSString stringWithFormat:@"Time bulundu! set=%p get=%p", g_mSetTS, g_mGetTS]);
+            }
+        }
+        // UnityEngine.Object.FindObjectOfType(Type) - hooksuz arama icin
+        if (!g_mFindObjectOfType) {
+            void* oc = i_class_from_name(img, "UnityEngine", "Object");
+            if (oc) {
+                g_mFindObjectOfType = i_class_get_method_from_name(oc, "FindObjectOfType", 1);
+                if (g_mFindObjectOfType) FLog([NSString stringWithFormat:@"FindObjectOfType bulundu! %p", g_mFindObjectOfType]);
+            }
+        }
+        // typeof(CarDriveSystem) ve typeof(CarPlayerInput)
+        if (!g_carDriveTypeObj && i_class_get_type && i_type_get_object) {
+            void* c = i_class_from_name(img, "TurnTheGameOn.IKAvatarDriver", "CarDriveSystem");
+            if (c) {
+                void* t = i_class_get_type(c);
+                if (t) g_carDriveTypeObj = i_type_get_object(t);
+                FLog([NSString stringWithFormat:@"CarDriveSystem tipi: %p", g_carDriveTypeObj]);
+            }
+        }
+        if (!g_carInputTypeObj && i_class_get_type && i_type_get_object) {
+            void* c = i_class_from_name(img, "TurnTheGameOn.IKAvatarDriver", "CarPlayerInput");
+            if (c) {
+                void* t = i_class_get_type(c);
+                if (t) g_carInputTypeObj = i_type_get_object(t);
+                FLog([NSString stringWithFormat:@"CarPlayerInput tipi: %p", g_carInputTypeObj]);
             }
         }
         if (!g_mmhClass) {
@@ -255,6 +292,8 @@ static void few1n_initIl2cpp(void) {
                     g_mRbGetVel = i_class_get_method_from_name(rbClass, "get_velocity", 0);
                     g_mRbSetVel = i_class_get_method_from_name(rbClass, "set_velocity", 1);
                 }
+                g_mRbGetPos = i_class_get_method_from_name(rbClass, "get_position", 0);
+                g_mRbSetPos = i_class_get_method_from_name(rbClass, "set_position", 1);
                 FLog([NSString stringWithFormat:@"Rigidbody bulundu! get=%p set=%p", g_mRbGetVel, g_mRbSetVel]);
             }
         }
@@ -307,6 +346,26 @@ static void rbSetVelIl(void* rb, Vec3* v) {
         return;
     }
     if (rb_setVel) rb_setVel(rb, v);     // yedek: ham Injected
+}
+
+// Rigidbody position - il2cpp runtime_invoke (ham cagri yedek)
+static void rbGetPosIl(void* rb, Vec3* out) {
+    out->x = out->y = out->z = 0;
+    if (!rb) return;
+    if (i_runtime_invoke && g_mRbGetPos) {
+        void* box = i_runtime_invoke(g_mRbGetPos, rb, NULL, NULL);   // boxed Vector3
+        if (box) { *out = *(Vec3*)((uintptr_t)box + 0x10); return; }
+    }
+    if (rb_getPos) rb_getPos(rb, out);
+}
+static void rbSetPosIl(void* rb, Vec3* v) {
+    if (!rb) return;
+    if (i_runtime_invoke && g_mRbSetPos) {
+        void* params[1] = { v };
+        i_runtime_invoke(g_mRbSetPos, rb, params, NULL);
+        return;
+    }
+    if (rb_setPos) rb_setPos(rb, v);
 }
 
 static void setTimeScaleVal(float v) {
@@ -524,14 +583,87 @@ static void h_driveMove(void* self, float a, float b, float c, float d) {
     }
 }
 
+// ===== HOOKSUZ ARABA ARAMA (MSHookFunction calismadigi icin tek yol) =====
+// Her poll'da FindObjectOfType(CarDriveSystem) cagirip Rigidbody'yi +0x48'den okur.
+// Ayrica arac paneli degerlerini de burada yazar.
+static long fFind = 0;      // basarili arama sayisi
+static void* g_carDrive = NULL;
+static void* g_carNitro = NULL;
+static void few1n_findCar(void) {
+    if (!g_mFindObjectOfType || !i_runtime_invoke) return;
+    @try {
+        // Adim 1 - CarDriveSystem'i bul
+        if (g_carDriveTypeObj) {
+            void* args[1]; args[0] = g_carDriveTypeObj;
+            void* found = i_runtime_invoke(g_mFindObjectOfType, NULL, args, NULL);
+            if (found) {
+                g_carDrive = found;
+                fFind++;
+                void* rb = *(void**)((uintptr_t)found + 0x48);   // _jfu_k__BackingField
+                if (rb) g_rb = rb;
+            } else {
+                g_carDrive = NULL;   // arabadan indiyse temizle
+            }
+        }
+        // Adim 2 - CarPlayerInput'u bul, nitro icin
+        if (g_carInputTypeObj) {
+            void* args2[1]; args2[0] = g_carInputTypeObj;
+            void* inp = i_runtime_invoke(g_mFindObjectOfType, NULL, args2, NULL);
+            if (inp) {
+                void* nos = *(void**)((uintptr_t)inp + 0x28);    // jhs -> CarNitro
+                if (nos) g_carNitro = nos;
+            }
+        }
+        // SONSUZ NITRO - hooksuz: CarNitro._jhq_k__BackingField (+0x34) surekli doldur
+        if (isInfiniteNitroEnabled && g_carNitro) {
+            *(float*)((uintptr_t)g_carNitro + 0x34) = 1.0f;
+        }
+        // HIZ HILESI - eski h_driveMove hookundan tasindi (hooklar calismiyor)
+        if (g_carDrive) {
+            uintptr_t d = (uintptr_t)g_carDrive;
+            diagDrive  = g_carDrive;
+            diagCurSpd = *(float*)(d + 0x9C);   // currentSpeed
+            diagTopSpd = *(float*)(d + 0x98);   // topSpeed
+            if (speedMode > 1) {
+                if (g_origTop <= 0.0f && diagTopSpd > 0.0f && diagTopSpd < 1000.0f) g_origTop = diagTopSpd;
+                float base = (g_origTop > 0.0f) ? g_origTop : 200.0f;
+                *(float*)(d + 0x98) = base * 3.0f;      // topSpeed cap'ini yukselt
+            } else if (g_origTop > 0.0f && !isCarPanelEnabled) {
+                *(float*)(d + 0x98) = g_origTop; g_origTop = 0.0f;   // eski degere don
+            }
+            // ASIL HIZ: linearVelocity'nin yatay bileseni buyutulur (y'ye dokunulmaz -> ucmaz)
+            if (g_rb && speedMode > 1) {
+                Vec3 v = {0,0,0};
+                rbGetVelIl(g_rb, &v);
+                float horiz = sqrtf(v.x*v.x + v.z*v.z);
+                diagVel = horiz;
+                if (horiz > 0.5f) {
+                    float cap = (speedMode == 2) ? 90.0f : (speedMode == 3) ? 140.0f : 230.0f;
+                    float ns = horiz * 1.06f; if (ns > cap) ns = cap;
+                    float k = ns / horiz;
+                    v.x *= k; v.z *= k;
+                    rbSetVelIl(g_rb, &v);
+                }
+            }
+        }
+        // Adim 3 - Arac kontrol paneli degerlerini yaz
+        if (isCarPanelEnabled && g_carDrive) {
+            uintptr_t d = (uintptr_t)g_carDrive;
+            *(unsigned char*)(d + 0x61) = 1;              // overrideAcceleration
+            *(float*)(d + 0x6C) = carAccelPower;          // overrideAccelerationPower
+            *(unsigned char*)(d + 0x62) = 1;              // overrideSteering
+            *(float*)(d + 0x64) = carSteerPower;          // overrideSteeringPower
+            *(float*)(d + 0x98) = carTopSpeed;            // topSpeed
+        }
+    } @catch (...) {}
+}
+
 // ===== GERCEK COZUM: CarPlayerInput.FixedUpdate (SADECE YEREL OYUNCU) =====
 // script.json + il2cpp.h ile dogrulandi:
 //   CarPlayerInput$$FixedUpdate = RVA 0x54D0BC0  (88935360)
 //   CarPlayerInput_Fields: +0x20 jhr=CarDriveSystem*, +0x28 jhs=CarNitro*
 //   CarDriveSystem_Fields: +0x48 _jfu_k__BackingField = UnityEngine.Rigidbody*
 // NOT: CarDriveSystem'de Update/FixedUpdate YOK -> eski hooklar bu yuzden hic tetiklenmedi.
-static void* g_carDrive = NULL;
-static void* g_carNitro = NULL;
 static void (*o_playerInputFixed)(void*) = NULL;
 static void h_playerInputFixed(void* self) {
     fInput++;
@@ -829,7 +961,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v25.1 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v25.3 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1177,54 +1309,55 @@ static void h_addMoney(void* self, int amount) {
 
 // ===== ISINLANMA (kendi araban - Rigidbody.position) =====
 - (void)saveTeleportPos {
-    if (g_rb && rb_getPos) {
+    if (g_rb) {
         @try {
-            rb_getPos(g_rb, &g_savedPos);
+            rbGetPosIl(g_rb, &g_savedPos);
             g_hasSavedPos = true;
             FLog([NSString stringWithFormat:@"Konum kaydedildi: %.1f, %.1f, %.1f", g_savedPos.x, g_savedPos.y, g_savedPos.z]);
         } @catch (...) {}
     }
 }
 - (void)teleportSaved {
-    if (g_rb && rb_setPos && g_hasSavedPos) {
+    if (g_rb && g_hasSavedPos) {
         @try {
             Vec3 p = g_savedPos;
-            rb_setPos(g_rb, &p);
-            if (rb_setVel) { Vec3 z = {0,0,0}; rb_setVel(g_rb, &z); }   // hizi sifirla
+            rbSetPosIl(g_rb, &p);
+            Vec3 z = {0,0,0}; rbSetVelIl(g_rb, &z);   // hizi sifirla
         } @catch (...) {}
     }
 }
 - (void)teleportForward {
-    if (g_rb && rb_getPos && rb_setPos) {
+    if (g_rb) {
         @try {
             Vec3 p = {0,0,0};
-            rb_getPos(g_rb, &p);
+            rbGetPosIl(g_rb, &p);
             p.z += 50.0f;   // 50 birim ileri (harita eksenine gore)
             p.y += 3.0f;
-            rb_setPos(g_rb, &p);
+            rbSetPosIl(g_rb, &p);
         } @catch (...) {}
     }
 }
 - (void)teleportUp {
-    if (g_rb && rb_getPos && rb_setPos) {
+    if (g_rb) {
         @try {
             Vec3 p = {0,0,0};
-            rb_getPos(g_rb, &p);
+            rbGetPosIl(g_rb, &p);
             p.y += 30.0f;   // 30 birim yukari (takildiginda kurtul)
-            rb_setPos(g_rb, &p);
+            rbSetPosIl(g_rb, &p);
         } @catch (...) {}
     }
 }
 
 - (void)tick {
     enforceScale();
+    few1n_findCar();   // hooksuz araba arama + arac paneli uygulamasi
     // her ~2 sn'de bir canli hiz teshisini loga yaz
     static int tc = 0;
     if (++tc >= 7) {
         tc = 0;
         float ts = g_il2cppReady ? getTimeScaleVal() : (ts_get ? ts_get() : -1.0f);
-        FLog([NSString stringWithFormat:@"[DIAG] *ANA*Input=%ld | hookOK=%d hookFAIL=%d",
-              fInput, hookSuccessCount, hookFailCount]);
+        FLog([NSString stringWithFormat:@"[DIAG] ARAMA=%ld carDrive=%@ | hookOK=%d hookFAIL=%d",
+              fFind, g_carDrive ? @"VAR" : @"YOK", hookSuccessCount, hookFailCount]);
         FLog([NSString stringWithFormat:@"[DIAG] nitro=%ld drive=%ld plate=%ld RCCP=%ld smRCC=%ld smPUN=%ld",
               fNitro, fDrive, fPlate, fRccp, fSmRCC, fSmPUN]);
         FLog([NSString stringWithFormat:@"[DIAG] rb=%@ rbMethod=%@ nitroDeg=%.2f il2cpp=%@",
@@ -2051,7 +2184,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v25.1 basladi, UnityFramework araniyor...");
+    FLog(@"v25.3 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
