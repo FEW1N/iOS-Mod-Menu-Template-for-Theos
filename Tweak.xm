@@ -218,17 +218,22 @@ static size_t (*i_image_get_class_count)(const void*) = NULL;
 static const void* (*i_image_get_class)(const void*, size_t) = NULL;
 static const char* (*i_class_get_name)(void*) = NULL;
 // Bir image'da verilen isimdeki sinifi TARAYARAK bul (obfuscation'a dayanikli)
+static long g_classScanned = 0;   // teshis: kac sinif tarandi
 static void* few1n_findClassByName(const void* img, const char* wantName) {
     if (!i_image_get_class_count || !i_image_get_class || !i_class_get_name) return NULL;
-    @try {
-        size_t cnt = i_image_get_class_count(img);
-        for (size_t k = 0; k < cnt; k++) {
+    size_t cnt = 0;
+    @try { cnt = i_image_get_class_count(img); } @catch (...) { return NULL; }
+    if (cnt == 0 || cnt > 200000) return NULL;
+    for (size_t k = 0; k < cnt; k++) {
+        // HER sinifi ayri koru: bir bozuk sinif tum taramayi iptal etmesin
+        @try {
             void* cls = (void*)i_image_get_class(img, k);
             if (!cls) continue;
             const char* nm = i_class_get_name(cls);
+            g_classScanned++;
             if (nm && strcmp(nm, wantName) == 0) return cls;
-        }
-    } @catch (...) {}
+        } @catch (...) { continue; }
+    }
     return NULL;
 }
 // Sinif -> System.Type nesnesi (FindObjectOfType icin)
@@ -358,9 +363,13 @@ static void few1n_initIl2cpp(void) {
             void* roc = i_class_from_name(img, "Photon.Realtime", "RoomOptions");
             if (roc) { g_roomOptionsClass = roc; FLog([NSString stringWithFormat:@"RoomOptions bulundu! %p", roc]); }
         }
-        if (g_mSetTS && g_mRbSetVel && g_mSetRichText && g_roomOptionsClass) break;
+        // ONEMLI: araba tipleri de bulunana kadar DURMA (ayri assembly'de olabilir)
+        if (g_mSetTS && g_mRbSetVel && g_mSetRichText && g_roomOptionsClass &&
+            g_carDriveTypeObj && g_carInputTypeObj && g_mCamGetMain) break;
     }
     g_il2cppReady = (g_mSetTS != NULL);
+    FLog([NSString stringWithFormat:@"il2cpp bitti: carTip=%@ inputTip=%@ (taranan sinif=%ld)",
+          g_carDriveTypeObj ? @"VAR" : @"YOK", g_carInputTypeObj ? @"VAR" : @"YOK", g_classScanned]);
     if (!g_il2cppReady) FLog(@"UnityEngine.Time bulunamadi");
 }
 
@@ -1135,7 +1144,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v26.2  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v26.4  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1274,7 +1283,7 @@ static void h_addMoney(void* self, int amount) {
     if (global_base != 0 && g_il2cppReady) {
         sc.backgroundColor = [UIColor colorWithRed:0.0 green:0.55 blue:0.85 alpha:0.10];
         sc.layer.borderColor = [UIColor colorWithRed:0.0 green:0.55 blue:0.85 alpha:0.35].CGColor;
-        sl.text = g_rb ? @"\U0001F7E2 il2cpp OK  •  Araba bagli" : @"\U0001F7E1 il2cpp OK  •  Arabaya bin";
+        sl.text = g_rb ? @"\U0001F7E2 il2cpp OK  •  Araba bagli" : @"\U0001F7E1 il2cpp OK  •  Araba araniyor...";
         sl.textColor = C_ON;
     } else {
         sc.backgroundColor = [UIColor colorWithRed:0.90 green:0.20 blue:0.35 alpha:0.10];
@@ -1289,6 +1298,7 @@ static void h_addMoney(void* self, int amount) {
     [self.contentView addSubview:sc];
     y += 46;
 
+    y = [self actionRow:@"\U0001F504  Modu Yeniden Baslat (araba bulunamazsa)" color:C_ON atY:y action:@selector(restartMod)];
     y = [self actionRow:@"\U0001F4CB  Loglari Goster (hata teshisi)" color:C_CYAN atY:y action:@selector(showLog)];
 
     UILabel *foot = [[UILabel alloc] initWithFrame:CGRectMake(0,y+4,pw,24)];
@@ -1457,7 +1467,7 @@ static void h_addMoney(void* self, int amount) {
         if (global_base != 0 && g_il2cppReady) {
             self.statusCard.backgroundColor = [UIColor colorWithRed:0.0 green:0.55 blue:0.85 alpha:0.10];
             self.statusCard.layer.borderColor = [UIColor colorWithRed:0.0 green:0.55 blue:0.85 alpha:0.35].CGColor;
-            self.statusLabel.text = g_rb ? @"\U0001F7E2 il2cpp OK  •  Araba bagli" : @"\U0001F7E1 il2cpp OK  •  Arabaya bin";
+            self.statusLabel.text = g_rb ? @"\U0001F7E2 il2cpp OK  •  Araba bagli" : @"\U0001F7E1 il2cpp OK  •  Araba araniyor...";
             self.statusLabel.textColor = C_ON;
         }
     }
@@ -1498,7 +1508,7 @@ static void h_addMoney(void* self, int amount) {
 }
 
 - (void)jumpTap {
-    FLog(ptrOk(g_rb) ? @"ZIPLA: rb VAR, uygulaniyor" : @"ZIPLA: rb YOK! (once arabaya bin+sur)");
+    FLog(ptrOk(g_rb) ? @"ZIPLA: rb VAR, uygulaniyor" : @"ZIPLA: rb YOK (mod arabayi henuz bulamadi)");
     if (ptrOk(g_rb)) {
         @try {
             Vec3 v = {0,0,0};
@@ -1511,7 +1521,7 @@ static void h_addMoney(void* self, int amount) {
 
 // ===== YENI: HIZ PATLAMASI (anlik) - yatay hizi 2.5x it =====
 - (void)boostTap {
-    if (!ptrOk(g_rb)) { FLog(@"Boost: arabaya bin"); return; }
+    if (!ptrOk(g_rb)) { FLog(@"Boost: araba araniyor (birkac saniye bekle)"); return; }
     @try {
         Vec3 v = {0,0,0};
         rbGetVelIl(g_rb, &v);
@@ -1525,7 +1535,7 @@ static void h_addMoney(void* self, int amount) {
 
 // ===== YENI: ARACI DONDUR - hizi sifirla (anlik dur) =====
 - (void)freezeTap {
-    if (!ptrOk(g_rb)) { FLog(@"Dondur: arabaya bin"); return; }
+    if (!ptrOk(g_rb)) { FLog(@"Dondur: araba araniyor (birkac saniye bekle)"); return; }
     @try {
         Vec3 z = {0,0,0};
         rbSetVelIl(g_rb, &z);
@@ -2301,6 +2311,25 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
     [self present:ac];
 }
 
+// ===== MODU YENIDEN BASLAT (oyunu kapatmadan il2cpp cozumunu tekrar calistir) =====
+// Araba ilk aciliste bulunamadiysa (sahne gec yuklendiyse) bu buton her seyi yeniden arar.
+- (void)restartMod {
+    FLog(@"=== MOD YENIDEN BASLATILIYOR ===");
+    // araba onbellegini temizle
+    g_carDrive = NULL; g_carNitro = NULL; g_rb = NULL; g_origTop = 0.0f; g_classScanned = 0;
+    // il2cpp cozumunu tekrar calistir - araba assembly'si sonradan yuklendiyse simdi bulunur
+    few1n_initIl2cpp();
+    few1n_findCar();
+    NSString *sonuc = [NSString stringWithFormat:@"Yeniden baslatildi: carTip=%@ araba=%@ rb=%@",
+                       g_carDriveTypeObj?@"VAR":@"YOK", g_carDrive?@"VAR":@"YOK", g_rb?@"VAR":@"YOK"];
+    FLog(sonuc);
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F504 Mod Yeniden Baslatildi"
+                                                               message:sonuc preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:ac];
+    [self refreshUI];
+}
+
 - (void)showLog {
     UIWindow *w = getKeyWindow(); if (!w) return;
     if (self.logOverlay) { [self.logOverlay removeFromSuperview]; self.logOverlay = nil; }
@@ -2337,7 +2366,7 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
     [st appendFormat:@"CarDriveSystem:%@ CarNitro:%@\n", g_carDrive?@"✓":@"✗", g_carNitro?@"✓":@"✗"];
     [st appendFormat:@"AracPanel:%@ guc=%.1f dir=%.1f maks=%.0f\n", isCarPanelEnabled?@"A":@"K", carAccelPower, carSteerPower, carTopSpeed];
     [st appendFormat:@"nitro:%ld drive:%ld plate:%ld\nRCCP:%ld smRCC:%ld smPUN:%ld\n", fNitro, fDrive, fPlate, fRccp, fSmRCC, fSmPUN];
-    [st appendFormat:@"Rigidbody(g_rb): %@  %@\n", g_rb?@"YAKALANDI ✓":@"YOK ✗", g_rb?@"(zipla/ucus/isinla calisir)":@"(arabaya bin+sur)"];
+    [st appendFormat:@"Rigidbody(g_rb): %@  %@\n", g_rb?@"YAKALANDI ✓":@"YOK ✗", g_rb?@"(zipla/ucus/isinla calisir)":@"(mod arabayi ariyor - sur)"];
     [st appendString:@"── BASE TESTI (araba disi hook) ──\n"];
     [st appendFormat:@"timeScale:%ld chat:%ld odaSatir:%ld odaKurBtn:%ld baglanti:%ld\n", fTS, fChat, fRoomLine, fCreateBtn, fConn];
     long nonCar = fTS + fChat + fRoomLine + fCreateBtn + fConn;
@@ -2365,7 +2394,7 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
                                      { [st appendString:@"[X] FindObjectOfType bulucu yok - araba aranamaz\n"]; problems++; }
     if (!g_carDriveTypeObj)          { [st appendString:@"[!] CarDriveSystem tipi yok - araba hileleri kapali\n"]; problems++; }
     if (!g_rb && (isFlyEnabled || isLowGravEnabled || speedMode > 1))
-                                     { [st appendString:@"[!] Rigidbody yok ama araba hilesi acik - arabaya bin\n"]; problems++; }
+                                     { [st appendString:@"[!] Rigidbody yok - mod arabayi henuz yakalamadi\n"]; problems++; }
     if (!pn_createRoom)              { [st appendString:@"[!] Oda kurma pointeri yok\n"]; problems++; }
     if (!pn_getPlayerList)           { [st appendString:@"[!] Oyuncu listesi pointeri yok\n"]; problems++; }
     if (problems == 0) [st appendString:@"[OK] Kritik hata bulunamadi\n"];
@@ -2525,7 +2554,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v26.2 basladi, UnityFramework araniyor...");
+    FLog(@"v26.4 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
