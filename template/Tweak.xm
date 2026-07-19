@@ -70,7 +70,7 @@ static bool isAsciiAnimEnabled = false; // ASCII animasyon spam
 static int  asciiAnimIndex = 0;         // hangi animasyon
 static int  asciiFrameIdx = 0;          // mevcut kare
 static bool isRoomSpamEnabled = false;  // fake oda spam
-static char customRoomName[160] = "<b><color=#FF0000>FEW1N</color></b>";
+static char customRoomName[160] = "\xE3\x80\x90\xE2\x98\x85 \xEF\xBC\xA6\xEF\xBC\xA5\xEF\xBC\xB7\xEF\xBC\x91\xEF\xBC\xAE \xE2\x98\x85\xE3\x80\x91";  // 【★ FEW1N ★】 Unicode (hook gerekmez)
 static int  roomSpamPhase = 0;          // 0=kur, 1=cik
 static int  roomSpamCount = 0;          // kurulan oda sayaci
 static int  roomSpamMaxCount = 0;       // hedef (0 = sinirsiz)
@@ -258,21 +258,27 @@ static void few1n_initIl2cpp(void) {
                       g_mFindObjectOfType, g_mFindObjInactive, g_mFindAnyByType]);
             }
         }
-        // typeof(CarDriveSystem) ve typeof(CarPlayerInput)
-        if (!g_carDriveTypeObj && i_class_get_type && i_type_get_object) {
+        // typeof(CarDriveSystem) - her adim ayri loglanir ki nerede takildigi gorulsun
+        if (!g_carDriveTypeObj) {
             void* c = i_class_from_name(img, "TurnTheGameOn.IKAvatarDriver", "CarDriveSystem");
+            if (!c) c = i_class_from_name(img, "TurnTheGameOn", "CarDriveSystem");
+            if (!c) c = i_class_from_name(img, "", "CarDriveSystem");
             if (c) {
-                void* t = i_class_get_type(c);
-                if (t) g_carDriveTypeObj = i_type_get_object(t);
-                FLog([NSString stringWithFormat:@"CarDriveSystem tipi: %p", g_carDriveTypeObj]);
+                FLog([NSString stringWithFormat:@"CarDriveSystem SINIF bulundu: %p (getType=%p typeObj=%p)",
+                      c, (void*)i_class_get_type, (void*)i_type_get_object]);
+                if (i_class_get_type) {
+                    void* t = i_class_get_type(c);
+                    if (t && i_type_get_object) g_carDriveTypeObj = i_type_get_object(t);
+                    FLog([NSString stringWithFormat:@"CarDriveSystem tip=%p tipNesnesi=%p", t, g_carDriveTypeObj]);
+                }
             }
         }
-        if (!g_carInputTypeObj && i_class_get_type && i_type_get_object) {
+        if (!g_carInputTypeObj) {
             void* c = i_class_from_name(img, "TurnTheGameOn.IKAvatarDriver", "CarPlayerInput");
-            if (c) {
+            if (!c) c = i_class_from_name(img, "", "CarPlayerInput");
+            if (c && i_class_get_type) {
                 void* t = i_class_get_type(c);
-                if (t) g_carInputTypeObj = i_type_get_object(t);
-                FLog([NSString stringWithFormat:@"CarPlayerInput tipi: %p", g_carInputTypeObj]);
+                if (t && i_type_get_object) g_carInputTypeObj = i_type_get_object(t);
             }
         }
         if (!g_mmhClass) {
@@ -427,6 +433,20 @@ static void safeHook(void* target, void* replacement, void** original, const cha
     if (!target) { FLog([@"SKIP (NULL) " stringByAppendingString:nm]); hookFailCount++; return; }
     if (original) *original = NULL;
     few1n_probeSubstrate();
+    // Ilk hookta base'in gercekten Mach-O basi olup olmadigini dogrula.
+    // Base yanlissa hedef adres cop olur ve MSHookFunction sessizce basarisiz olur.
+    static bool baseChecked = false;
+    if (!baseChecked) {
+        baseChecked = true;
+        @try {
+            uint32_t magic = *(uint32_t*)global_base;
+            FLog([NSString stringWithFormat:@"Base kontrol: magic=0x%08X %@",
+                  magic, (magic == 0xFEEDFACF) ? @"(GECERLI Mach-O)" : @"(GECERSIZ! base yanlis)"]);
+            uint32_t insn = *(uint32_t*)target;   // hedefteki ilk ARM64 komutu
+            FLog([NSString stringWithFormat:@"Hedef ilk komut: 0x%08X %@",
+                  insn, (insn != 0 && insn != 0xFFFFFFFF) ? @"(kod gibi)" : @"(BOS! adres yanlis)"]);
+        } @catch (...) { FLog(@"Base/hedef okunamadi - adres gecersiz"); }
+    }
     if (g_msHook) g_msHook(target, replacement, original);   // dlsym ile bulunan gercek motor
     else MSHookFunction(target, replacement, original);      // bagli sembol (stub olabilir)
     // GERCEK dogrulama: MSHookFunction basarili olursa *original orijinal koda isaret eder.
@@ -900,17 +920,17 @@ static void h_addMoney(void* self, int amount) {
 // =============================================================
 //  UI
 // =============================================================
-// ==== BEYAZ / BUZ MAVISI NEON TEMA ====
-#define C_BG     [UIColor colorWithRed:0.03 green:0.07 blue:0.11 alpha:0.72]
-#define C_CARD   [UIColor colorWithRed:0.60 green:0.90 blue:1.0 alpha:0.09]
-#define C_ON     [UIColor colorWithRed:0.45 green:0.93 blue:1.0 alpha:1.0]   // buz mavisi neon
-#define C_OFF    [UIColor colorWithRed:0.18 green:0.26 blue:0.33 alpha:1.0]
-#define C_RED    [UIColor colorWithRed:1.0 green:0.35 blue:0.55 alpha:1.0]
-#define C_ACCENT [UIColor colorWithRed:0.70 green:0.95 blue:1.0 alpha:1.0]   // beyaza calan buz
-#define C_GOLD   [UIColor colorWithRed:0.85 green:0.97 blue:1.0 alpha:1.0]   // parlak buz beyazi
-#define C_CYAN   [UIColor colorWithRed:0.30 green:0.85 blue:1.0 alpha:1.0]
-#define C_TEXT   [UIColor colorWithRed:0.94 green:0.99 blue:1.0 alpha:1.0]
-#define C_SUB    [UIColor colorWithRed:0.65 green:0.85 blue:0.95 alpha:0.62]
+// ==== BEYAZ ARKA PLAN / BUZ MAVISI NEON TEMA ====
+#define C_BG     [UIColor colorWithRed:0.97 green:0.99 blue:1.0 alpha:0.97]   // beyaz panel
+#define C_CARD   [UIColor colorWithRed:0.20 green:0.55 blue:0.75 alpha:0.07]  // hafif buz karti
+#define C_ON     [UIColor colorWithRed:0.0 green:0.55 blue:0.85 alpha:1.0]    // canli buz mavisi (acik)
+#define C_OFF    [UIColor colorWithRed:0.70 green:0.76 blue:0.82 alpha:1.0]   // gri (kapali)
+#define C_RED    [UIColor colorWithRed:0.90 green:0.20 blue:0.35 alpha:1.0]
+#define C_ACCENT [UIColor colorWithRed:0.0 green:0.60 blue:0.90 alpha:1.0]    // buz mavisi vurgu
+#define C_GOLD   [UIColor colorWithRed:0.0 green:0.45 blue:0.70 alpha:1.0]    // koyu buz mavisi
+#define C_CYAN   [UIColor colorWithRed:0.10 green:0.62 blue:0.92 alpha:1.0]
+#define C_TEXT   [UIColor colorWithRed:0.06 green:0.12 blue:0.20 alpha:1.0]   // koyu lacivert metin
+#define C_SUB    [UIColor colorWithRed:0.30 green:0.42 blue:0.52 alpha:0.85]  // gri-mavi alt metin
 
 @interface FEW1NMenu : NSObject
 @property (nonatomic, strong) UIButton *fab;
@@ -987,14 +1007,14 @@ static void h_addMoney(void* self, int amount) {
     self.panel.backgroundColor = C_BG;
     self.panel.layer.cornerRadius = 28;
     self.panel.layer.borderWidth = 1.5;
-    self.panel.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.12].CGColor;
+    self.panel.layer.borderColor = [UIColor colorWithRed:0.0 green:0.60 blue:0.90 alpha:0.35].CGColor;
     self.panel.layer.shadowColor = C_CYAN.CGColor;
     self.panel.layer.shadowRadius = 25; self.panel.layer.shadowOpacity = 0.4;
     self.panel.layer.shadowOffset = CGSizeMake(0,0);
     self.panel.clipsToBounds = YES;
     self.panel.hidden = YES; self.panel.alpha = 0;
     self.panel.transform = CGAffineTransformMakeScale(0.85, 0.85);
-    UIVisualEffectView *blurV = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleDark]];
+    UIVisualEffectView *blurV = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleExtraLight]];
     blurV.frame = self.panel.bounds;
     blurV.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.panel insertSubview:blurV atIndex:0];
@@ -1014,7 +1034,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v25.5 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v25.7 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1129,7 +1149,7 @@ static void h_addMoney(void* self, int amount) {
     y = [self header:@"\U0001F511  ODA" atY:y];
     y = [self toggle:@"\U0001F513  Sifre Kirici" sub:@"Sifreli odalara gir" key:@"bypass" atY:y action:@selector(tapBypass)];
     y = [self actionRow:@"\U0001F465  Odadaki Oyuncular (isim kopyala)" color:C_CYAN atY:y action:@selector(showPlayers)];
-    y = [self actionRow:@"\U0001F3A8  Renkli Oda Ac (rich text)" color:C_ON atY:y action:@selector(createColoredRoom)];
+    y = [self actionRow:@"\U0001F3A8  Sik Oda Ismi (Unicode - calisir)" color:C_ON atY:y action:@selector(createColoredRoom)];
     y = [self actionRow:@"\U0001F3E0  Ozel Isimli Oda Kur" color:C_GOLD atY:y action:@selector(createOneRoom)];
     y = [self toggle:@"\U0001F4E5  Fake Oda Spam" sub:@"Kalici odalar birikir" key:@"roomspam" atY:y action:@selector(tapRoomSpam)];
     y = [self toggle:@"\U0001F504  Surekli Mod" sub:@"Kapatana kadar spam" key:@"roomcont" atY:y action:@selector(tapRoomContinuous)];
@@ -1629,13 +1649,15 @@ static void h_addMoney(void* self, int amount) {
 
 // Ayri buton: rich text ismi sor + direkt renkli oda ac
 - (void)createColoredRoom {
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3A8 Renkli Oda Ac"
-                                                               message:@"Oda ismi (rich text destekli):" preferredStyle:UIAlertControllerStyleAlert];
+    // NOT: <color> tag'i icin RoomListLine.Setup hook'u gerekir, o da bu oyunda YAZILAMIYOR.
+    // Rich-text isimler bu yuzden KOD gozukur. Unicode sablonlar gercek karakter -> hook'suz calisir.
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3A8 Sik Oda Ismi"
+                                                               message:@"Unicode sablonlar garanti gozukur. Renk (rich-text) su an kod gozukuyor cunku hook yazilamiyor." preferredStyle:UIAlertControllerStyleAlert];
     [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
         tf.text = [NSString stringWithUTF8String:customRoomName];
         tf.clearButtonMode = UITextFieldViewModeAlways;
     }];
-    [ac addAction:[UIAlertAction actionWithTitle:@"\U0001F3E0 Oda Ac" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+    [ac addAction:[UIAlertAction actionWithTitle:@"\U0001F3E0 Yazdigim Ismi Kur" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         NSString *t = ac.textFields.firstObject.text;
         if (t.length > 0) {
             strncpy(customRoomName, t.UTF8String, sizeof(customRoomName)-1);
@@ -1643,13 +1665,6 @@ static void h_addMoney(void* self, int amount) {
             saveStr(@"roomName", t);
         }
         [self createOneRoom];   // direkt kur (pn_createRoom, dogrulama atlanir)
-    }]];
-    // hazir renk sablonlari
-    [ac addAction:[UIAlertAction actionWithTitle:@"\U0001F308 Gokkusagi Sablonu" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-        strncpy(customRoomName, "<b><color=#FF0000>F</color><color=#FF7F00>E</color><color=#FFFF00>W</color><color=#00FF00>1</color><color=#00FFFF>N</color></b>", sizeof(customRoomName)-1);
-        customRoomName[sizeof(customRoomName)-1]='\0';
-        saveStr(@"roomName", [NSString stringWithUTF8String:customRoomName]);
-        [self createOneRoom];
     }]];
     // ==== UNICODE SABLONLARI (richText GEREKTIRMEZ - garanti gorunur) ====
     // Bunlar tag degil gercek karakter: oyun strip edemez, ToUpper bozamaz, richText kapali olsa da cikar
@@ -1662,9 +1677,10 @@ static void h_addMoney(void* self, int amount) {
             [self createOneRoom];
         }]];
     };
-    uni(@"✨ Unicode: Kalin + Yildiz",  "【★ \U0001D5D9\U0001D5D8\U0001D5E7\U0001D7ED\U0001D5ED ★】");
-    uni(@"✨ Unicode: Genis Harf",      "▄▀▄ ＦＥＷ１Ｎ ▄▀▄");
-    uni(@"✨ Unicode: Gotik Suslu",     "꧁༺ \U0001D571\U0001D570\U0001D582\U0001D7CF\U0001D573 ༻꧂");
+    uni(@"✨ 【★ FEW1N ★】 (onerilen)",  "【★ \U0001D5D9\U0001D5D8\U0001D5E7\U0001D7ED\U0001D5ED ★】");
+    uni(@"✨ Genis Harf",       "▄▀▄ ＦＥＷ１Ｎ ▄▀▄");
+    uni(@"✨ Gotik Suslu",      "꧁༺ \U0001D571\U0001D570\U0001D582\U0001D7CF\U0001D573 ༻꧂");
+    uni(@"✨ Yildizli Cerceve", "★彡 ＦＥＷ１Ｎ 彡★");
     [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
     [self present:ac];
 }
@@ -2047,7 +2063,7 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
     CGFloat W = w.bounds.size.width, H = w.bounds.size.height;
     CGFloat ow = MIN(640.0, W - 20), oh = MIN(440.0, H - 20);
     self.logOverlay = [[UIView alloc] initWithFrame:CGRectMake((W-ow)/2, (H-oh)/2, ow, oh)];
-    self.logOverlay.backgroundColor = [UIColor colorWithRed:0.03 green:0.04 blue:0.07 alpha:0.97];
+    self.logOverlay.backgroundColor = [UIColor colorWithRed:0.97 green:0.99 blue:1.0 alpha:0.99];
     self.logOverlay.layer.cornerRadius = 16;
     self.logOverlay.layer.borderWidth = 1.5;
     self.logOverlay.layer.borderColor = C_CYAN.CGColor;
@@ -2058,8 +2074,8 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
     [self.logOverlay addSubview:tl];
 
     self.logText = [[UITextView alloc] initWithFrame:CGRectMake(10,36,ow-20,oh-86)];
-    self.logText.backgroundColor = [UIColor colorWithWhite:1 alpha:0.04];
-    self.logText.textColor = [UIColor colorWithRed:0.6 green:1.0 blue:0.7 alpha:1.0];
+    self.logText.backgroundColor = [UIColor colorWithRed:0.93 green:0.96 blue:0.99 alpha:1.0];
+    self.logText.textColor = [UIColor colorWithRed:0.05 green:0.20 blue:0.32 alpha:1.0];
     self.logText.font = [UIFont fontWithName:@"Menlo" size:9] ?: [UIFont systemFontOfSize:9];
     self.logText.editable = NO;
     self.logText.layer.cornerRadius = 8;
@@ -2085,6 +2101,30 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
     [st appendFormat:@"Hiz:%dx Nitro:%@ Ucus:%@ DusukG:%@\n", speedMode, isInfiniteNitroEnabled?@"A":@"K", isFlyEnabled?@"A":@"K", isLowGravEnabled?@"A":@"K"];
     [st appendFormat:@"RenkliChat:%@ Spam:%@ ASCII:%@ Sifre:%@\n", isColorChatEnabled?@"A":@"K", isSpamEnabled?@"A":@"K", isAsciiAnimEnabled?@"A":@"K", isBypassPasswordEnabled?@"A":@"K"];
     [st appendFormat:@"OdaSpam:%@ (kurulan:%d) SurekliMod:%@\n", isRoomSpamEnabled?@"A":@"K", roomSpamCount, roomSpamContinuous?@"A":@"K"];
+    // ═══════ GENIS HATA TARAMASI (otomatik tespit) ═══════
+    [st appendString:@"────── HATA TARAMASI ──────\n"];
+    int problems = 0;
+    if (global_base == 0)            { [st appendString:@"[X] Base bulunamadi (UnityFramework yok)\n"]; problems++; }
+    else {
+        @try {
+            uint32_t mg = *(uint32_t*)global_base;
+            if (mg != 0xFEEDFACF) { [st appendFormat:@"[X] Base GECERSIZ (magic=0x%08X)\n", mg]; problems++; }
+        } @catch (...) { [st appendString:@"[X] Base okunamiyor (adres cop)\n"]; problems++; }
+    }
+    if (!g_il2cppReady)              { [st appendString:@"[X] il2cpp API hazir degil\n"]; problems++; }
+    if (hookFailCount > 0 && hookSuccessCount == 0)
+                                     { [st appendFormat:@"[X] TUM hooklar olu (%d/%d) - Substrate yaziyamiyor\n", hookFailCount, hookFailCount]; problems++; }
+    if (!g_mSetTS)                   { [st appendString:@"[X] Time.set_timeScale metodu yok\n"]; problems++; }
+    if (!g_mRbSetVel)                { [st appendString:@"[X] Rigidbody.set_velocity metodu yok\n"]; problems++; }
+    if (!g_mFindObjectOfType && !g_mFindObjInactive && !g_mFindAnyByType)
+                                     { [st appendString:@"[X] FindObjectOfType bulucu yok - araba aranamaz\n"]; problems++; }
+    if (!g_carDriveTypeObj)          { [st appendString:@"[!] CarDriveSystem tipi yok - araba hileleri kapali\n"]; problems++; }
+    if (!g_rb && (isFlyEnabled || isLowGravEnabled || speedMode > 1))
+                                     { [st appendString:@"[!] Rigidbody yok ama araba hilesi acik - arabaya bin\n"]; problems++; }
+    if (!pn_createRoom)              { [st appendString:@"[!] Oda kurma pointeri yok\n"]; problems++; }
+    if (!pn_getPlayerList)           { [st appendString:@"[!] Oyuncu listesi pointeri yok\n"]; problems++; }
+    if (problems == 0) [st appendString:@"[OK] Kritik hata bulunamadi\n"];
+    else               [st appendFormat:@"Toplam %d sorun tespit edildi\n", problems];
     [st appendString:@"════════════════════════\n\n"];
     NSString *joined = gLog.count ? [gLog componentsJoinedByString:@"\n"] : @"(log yok - henuz calismadi)";
     self.logText.text = [st stringByAppendingString:joined];
@@ -2239,7 +2279,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v25.5 basladi, UnityFramework araniyor...");
+    FLog(@"v25.7 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
