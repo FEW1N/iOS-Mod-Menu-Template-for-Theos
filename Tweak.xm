@@ -50,6 +50,8 @@ static void saveBool(NSString* k, bool v)    { [defs() setBool:v forKey:k]; }
 static bool loadBool(NSString* k, bool def)   { return [defs() objectForKey:k] ? [defs() boolForKey:k] : def; }
 static void saveInt(NSString* k, int v)       { [defs() setInteger:v forKey:k]; }
 static int  loadInt(NSString* k, int def)     { return [defs() objectForKey:k] ? (int)[defs() integerForKey:k] : def; }
+static void saveFloat(NSString* k, float v)   { [defs() setFloat:v forKey:k]; }
+static float loadFloat(NSString* k, float def) { return [defs() objectForKey:k] ? [defs() floatForKey:k] : def; }
 static void saveStr(NSString* k, NSString* v) { if (v) [defs() setObject:v forKey:k]; }
 static NSString* loadStr(NSString* k, NSString* def) { NSString* s=[defs() stringForKey:k]; return s?:def; }
 
@@ -354,6 +356,35 @@ static void  (*pm_addMoney)(void* self, int amount) = NULL;
 static void  (*lobby_createRoom)(void* self) = NULL;   // HR_PhotonLobbyManager.CreateRoomButton
 static void  (*lobby_leaveRoom)(void* self) = NULL;    // HR_PhotonLobbyManager.LeaveRoom
 static bool  (*pn_createRoom)(void* name, void* opts, void* lobby, void* users) = NULL; // PhotonNetwork.CreateRoom
+// ==== ODADAKI OYUNCULAR (script.json dogrulandi) ====
+static void* (*pn_getPlayerList)(void) = NULL;      // PhotonNetwork.get_PlayerList -> Player[]  0x59339D0
+static void* (*ply_getNickName)(void*) = NULL;      // Player.get_NickName          0x5924574
+static int   (*ply_getActorNumber)(void*) = NULL;   // Player.get_ActorNumber       0x592455C
+static bool  (*ply_getIsMaster)(void*) = NULL;      // Player.get_IsMasterClient    0x5924640
+static void* (*ply_getUserId)(void*) = NULL;        // Player.get_UserId            0x5924630
+// HR_PhotonLobbyManager.EnableCarSelectionMenu() - oyun ici arac degistirme  0x54ABFD4
+static void  (*lobby_carSelectMenu)(void*) = NULL;
+// ==== ARAC KONTROL PANELI (CarDriveSystem field offsetleri, il2cpp.h dogrulandi) ====
+//  +0x60 overrideBrake(bool)  +0x61 overrideAcceleration(bool)  +0x62 overrideSteering(bool)
+//  +0x64 overrideSteeringPower  +0x68 overrideBrakePower  +0x6C overrideAccelerationPower
+//  +0x98 topSpeed  +0x9C currentSpeed
+static bool  isCarPanelEnabled = false;
+static float carAccelPower  = 3.0f;
+static float carSteerPower  = 1.0f;
+static float carTopSpeed    = 300.0f;
+// UserId -> isim gecmisi. ActorNumber odadan cikinca degisir, UserId hesaba bagli kalir.
+static NSMutableDictionary *g_playerDB = nil;
+static void loadPlayerDB(void) {
+    if (g_playerDB) return;
+    NSDictionary *d = [[NSUserDefaults standardUserDefaults] objectForKey:@"few1n_playerDB"];
+    g_playerDB = d ? [d mutableCopy] : [NSMutableDictionary dictionary];
+}
+static void savePlayerDB(void) {
+    if (g_playerDB) {
+        [[NSUserDefaults standardUserDefaults] setObject:g_playerDB forKey:@"few1n_playerDB"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+}
 
 // ===== HIZ TESHIS / YARDIMCILAR =====
 static float (*ts_get)(void) = NULL;     // Time.get_timeScale
@@ -362,6 +393,8 @@ static bool g_hasSavedPos = false;
 static void* diagDrive = NULL;
 static float diagCurSpd = 0, diagTopSpd = 0, diagVel = 0;
 static long  fNitro = 0, fDrive = 0, fPlate = 0, fRoomLine = 0, fRccp = 0, fSmRCC = 0, fSmPUN = 0;  // hook tetiklenme sayaclari
+static long  fTS = 0, fChat = 0, fCreateBtn = 0, fConn = 0;  // araba-disi hook sayaclari (base testi)
+static long  fInput = 0;  // CarPlayerInput.FixedUpdate - GERCEK araba hooku
 static float diagNitroVal = 0;
 static float g_origTop = 0;
 
@@ -381,6 +414,7 @@ static inline void enforceScale(void) {
     }
 }
 static void h_setTimeScale(float v) {
+    fTS++;
     // Oyun timeScale'i 1'e resetlemeye calisirsa bizim degeri zorla
     if (speedMode > 1) v = targetScale();
     if (o_setTimeScale) o_setTimeScale(v);
@@ -388,7 +422,7 @@ static void h_setTimeScale(float v) {
 
 // ===== ANTI-KICK =====
 static bool (*o_closeConnection)(void*) = NULL;
-static bool h_closeConnection(void* kickPlayer) { return false; }
+static bool h_closeConnection(void* kickPlayer) { fConn++; return false; }
 
 // ===== INFINITE NITRO =====
 static float (*o_getNitro)(void*) = NULL;
@@ -458,6 +492,42 @@ static void h_driveMove(void* self, float a, float b, float c, float d) {
     }
 }
 
+// ===== GERCEK COZUM: CarPlayerInput.FixedUpdate (SADECE YEREL OYUNCU) =====
+// script.json + il2cpp.h ile dogrulandi:
+//   CarPlayerInput$$FixedUpdate = RVA 0x54D0BC0  (88935360)
+//   CarPlayerInput_Fields: +0x20 jhr=CarDriveSystem*, +0x28 jhs=CarNitro*
+//   CarDriveSystem_Fields: +0x48 _jfu_k__BackingField = UnityEngine.Rigidbody*
+// NOT: CarDriveSystem'de Update/FixedUpdate YOK -> eski hooklar bu yuzden hic tetiklenmedi.
+static void* g_carDrive = NULL;
+static void* g_carNitro = NULL;
+static void (*o_playerInputFixed)(void*) = NULL;
+static void h_playerInputFixed(void* self) {
+    fInput++;
+    if (self) {
+        @try {
+            void* drive = *(void**)((uintptr_t)self + 0x20);   // jhr -> CarDriveSystem
+            if (drive) {
+                g_carDrive = drive;
+                void* rb = *(void**)((uintptr_t)drive + 0x48); // Rigidbody backing field
+                if (rb) g_rb = rb;
+            }
+            void* nos = *(void**)((uintptr_t)self + 0x28);     // jhs -> CarNitro
+            if (nos) g_carNitro = nos;
+            // ---- ARAC KONTROL PANELI: oyunun kendi override alanlarini kullan ----
+            // timeScale'e dokunmaz -> sadece bu arac etkilenir, digerleri fark etmez
+            if (isCarPanelEnabled && g_carDrive) {
+                uintptr_t d = (uintptr_t)g_carDrive;
+                *(unsigned char*)(d + 0x61) = 1;              // overrideAcceleration
+                *(float*)(d + 0x6C) = carAccelPower;          // overrideAccelerationPower
+                *(unsigned char*)(d + 0x62) = 1;              // overrideSteering
+                *(float*)(d + 0x64) = carSteerPower;          // overrideSteeringPower
+                *(float*)(d + 0x98) = carTopSpeed;            // topSpeed
+            }
+        } @catch (...) {}
+    }
+    if (o_playerInputFixed) o_playerInputFixed(self);
+}
+
 // ===== RCCP araba (oyuncu bunu kullaniyor) - Rigidbody yakala =====
 // RCCP_MainComponent Rigidbody @ self+0x48
 static void (*o_rccpUpdate)(void*) = NULL;
@@ -505,6 +575,7 @@ static void h_plateChange(void* self, struct PlateHolder holder) {
 // ===== CHAT =====
 static void (*o_chatSend)(void*, void*) = NULL;
 static void h_chatSend(void* self, void* msg) {
+    fChat++;
     if (isColorChatEnabled && msg) {
         NSString *orig = readStr(msg);
         if (orig.length > 0) {
@@ -540,6 +611,7 @@ static void h_roomConnect(void* self) {
 // RoomNameText'in richText'ini zorla ac (oyun guncellemede kapatmis)
 static void (*o_roomLineSetup)(void*, void*, void*, unsigned char, unsigned char, void*, void*) = NULL;
 static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsigned char d, void* e, void* f) {
+    fRoomLine++;
     if (o_roomLineSetup) o_roomLineSetup(self, a, b, c, d, e, f);   // once oyun ismi set etsin (buyuk harfe cevirir)
     if (self) {
         @try {
@@ -573,6 +645,7 @@ static void h_onJoinFail(void* self, short code, void* msg) {
 // Oyunun kendi CreateRoomButton'u rich text ismi reddediyordu; biz dogrulamayi atliyoruz.
 static void (*o_createRoomBtn)(void*) = NULL;
 static void h_createRoomBtn(void* self) {
+    fCreateBtn++;
     @try {
         void* nameInput = *(void**)((uintptr_t)self + 0x48);   // roomNameInput
         NSString *typed = (nameInput && tmp_get_text) ? readStr(tmp_get_text(nameInput)) : @"";
@@ -723,7 +796,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v24.4 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v24.9 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -777,6 +850,9 @@ static void h_addMoney(void* self, int amount) {
     y += 22;
 
     y = [self header:@"\U0001F3CE  ARAC" atY:y];
+    y = [self actionRow:@"\U0001F504  Araci Degistir (oyun ici)" color:C_GOLD atY:y action:@selector(openCarSelect)];
+    y = [self toggle:@"⚙️  Arac Kontrol Paneli" sub:@"Motor/direksiyon/maks hiz - timeScale'siz" key:@"carpanel" atY:y action:@selector(tapCarPanel)];
+    y = [self actionRow:@"✏️  Arac Ayarlarini Duzenle" color:C_CYAN atY:y action:@selector(editCarPanel)];
     y = [self toggle:@"\U0001F4A8  Sonsuz Nitro" sub:@"Nitro hic bitmez" key:@"nitro" atY:y action:@selector(tapNitro)];
     y = [self toggle:@"\U0001F681  Ucus (Hover)"  sub:@"Havada asili kal, surerek uc" key:@"fly" atY:y action:@selector(tapFly)];
     y = [self toggle:@"\U0001FAB6  Dusuk Yercekimi" sub:@"Dusus yavas, floaty" key:@"lowgrav" atY:y action:@selector(tapLowGrav)];
@@ -834,6 +910,7 @@ static void h_addMoney(void* self, int amount) {
 
     y = [self header:@"\U0001F511  ODA" atY:y];
     y = [self toggle:@"\U0001F513  Sifre Kirici" sub:@"Sifreli odalara gir" key:@"bypass" atY:y action:@selector(tapBypass)];
+    y = [self actionRow:@"\U0001F465  Odadaki Oyuncular (isim kopyala)" color:C_CYAN atY:y action:@selector(showPlayers)];
     y = [self actionRow:@"\U0001F3A8  Renkli Oda Ac (rich text)" color:C_ON atY:y action:@selector(createColoredRoom)];
     y = [self actionRow:@"\U0001F3E0  Ozel Isimli Oda Kur" color:C_GOLD atY:y action:@selector(createOneRoom)];
     y = [self toggle:@"\U0001F4E5  Fake Oda Spam" sub:@"Kalici odalar birikir" key:@"roomspam" atY:y action:@selector(tapRoomSpam)];
@@ -1351,7 +1428,188 @@ static void h_addMoney(void* self, int amount) {
         saveStr(@"roomName", [NSString stringWithUTF8String:customRoomName]);
         [self createOneRoom];
     }]];
+    // ==== UNICODE SABLONLARI (richText GEREKTIRMEZ - garanti gorunur) ====
+    // Bunlar tag degil gercek karakter: oyun strip edemez, ToUpper bozamaz, richText kapali olsa da cikar
+    void (^uni)(NSString*, const char*) = ^(NSString *title, const char *val){
+        [ac addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            strncpy(customRoomName, val, sizeof(customRoomName)-1);
+            customRoomName[sizeof(customRoomName)-1]='\0';
+            saveStr(@"roomName", [NSString stringWithUTF8String:customRoomName]);
+            FLog(@"Unicode oda ismi secildi (richText gerekmez)");
+            [self createOneRoom];
+        }]];
+    };
+    uni(@"✨ Unicode: Kalin + Yildiz",  "【★ \U0001D5D9\U0001D5D8\U0001D5E7\U0001D7ED\U0001D5ED ★】");
+    uni(@"✨ Unicode: Genis Harf",      "▄▀▄ ＦＥＷ１Ｎ ▄▀▄");
+    uni(@"✨ Unicode: Gotik Suslu",     "꧁༺ \U0001D571\U0001D570\U0001D582\U0001D7CF\U0001D573 ༻꧂");
     [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
+// ===== OYUN ICI ARAC DEGISTIRME =====
+- (void)openCarSelect {
+    if (!lobbyGetInst || !lobby_carSelectMenu) { FLog(@"Arac secim pointeri yok"); return; }
+    @try {
+        void* lobby = lobbyGetInst();
+        if (!lobby) { FLog(@"Lobi bulunamadi - odada olmalisin"); return; }
+        lobby_carSelectMenu(lobby);
+        FLog(@"Arac secim menusu acildi");
+    } @catch (...) { FLog(@"Arac secim menusu acilamadi"); }
+}
+
+// ===== ARAC KONTROL PANELI =====
+- (void)tapCarPanel {
+    isCarPanelEnabled = !isCarPanelEnabled;
+    saveBool(@"carpanel", isCarPanelEnabled);
+    if (!isCarPanelEnabled && g_carDrive) {
+        @try {   // kapatinca oyunun kendi kontroluna geri birak
+            uintptr_t d = (uintptr_t)g_carDrive;
+            *(unsigned char*)(d + 0x61) = 0;
+            *(unsigned char*)(d + 0x62) = 0;
+        } @catch (...) {}
+    }
+    FLog([NSString stringWithFormat:@"Arac paneli: %@", isCarPanelEnabled ? @"ACIK" : @"KAPALI"]);
+    [self refreshUI];
+}
+
+- (void)editCarPanel {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3CE Arac Ayarlari"
+                                                               message:@"Motor gucu / direksiyon / maks hiz"
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
+        tf.placeholder = @"Motor gucu (normal 1.0)";
+        tf.text = [NSString stringWithFormat:@"%.1f", carAccelPower];
+        tf.keyboardType = UIKeyboardTypeDecimalPad;
+    }];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
+        tf.placeholder = @"Direksiyon (normal 1.0)";
+        tf.text = [NSString stringWithFormat:@"%.1f", carSteerPower];
+        tf.keyboardType = UIKeyboardTypeDecimalPad;
+    }];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
+        tf.placeholder = @"Maks hiz";
+        tf.text = [NSString stringWithFormat:@"%.0f", carTopSpeed];
+        tf.keyboardType = UIKeyboardTypeDecimalPad;
+    }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Kaydet" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        float v1 = [ac.textFields[0].text floatValue];
+        float v2 = [ac.textFields[1].text floatValue];
+        float v3 = [ac.textFields[2].text floatValue];
+        if (v1 > 0.1f && v1 <= 50.0f)   carAccelPower = v1;
+        if (v2 > 0.1f && v2 <= 20.0f)   carSteerPower = v2;
+        if (v3 > 10.0f && v3 <= 2000.0f) carTopSpeed  = v3;
+        saveFloat(@"caraccel", carAccelPower);
+        saveFloat(@"carsteer", carSteerPower);
+        saveFloat(@"cartop",   carTopSpeed);
+        FLog([NSString stringWithFormat:@"Arac ayari: guc=%.1f direksiyon=%.1f maksHiz=%.0f", carAccelPower, carSteerPower, carTopSpeed]);
+        [self refreshUI];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Varsayilana Don" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+        carAccelPower = 1.0f; carSteerPower = 1.0f; carTopSpeed = 150.0f;
+        saveFloat(@"caraccel", carAccelPower);
+        saveFloat(@"carsteer", carSteerPower);
+        saveFloat(@"cartop",   carTopSpeed);
+        FLog(@"Arac ayarlari sifirlandi");
+        [self refreshUI];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
+// ===== ODADAKI OYUNCULARI LISTELE + ISIM KOPYALA =====
+// il2cpp dizi yerlesimi: +0x18 = eleman sayisi, +0x20 = ilk eleman
+- (void)showPlayers {
+    if (!pn_getPlayerList) { FLog(@"Oyuncu listesi pointeri yok"); return; }
+    loadPlayerDB();
+    NSMutableArray<NSDictionary*> *rows = [NSMutableArray array];   // her satir: nick/uid/etiket/gecmis
+    int changedCount = 0;
+    @try {
+        void* arr = pn_getPlayerList();
+        if (!arr) { FLog(@"Odada degilsin (PlayerList bos)"); return; }
+        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+        if (cnt < 0 || cnt > 64) { FLog([NSString stringWithFormat:@"Oyuncu sayisi anormal: %d", cnt]); return; }
+        void** elems = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt; i++) {
+            void* p = elems[i];
+            if (!p) continue;
+            NSString *nick = (ply_getNickName) ? readStr(ply_getNickName(p)) : @"";
+            if (nick.length == 0) nick = @"(isimsiz)";
+            NSString *uid  = (ply_getUserId) ? readStr(ply_getUserId(p)) : @"";
+            int actor = (ply_getActorNumber) ? ply_getActorNumber(p) : 0;
+            BOOL master = (ply_getIsMaster) ? ply_getIsMaster(p) : NO;
+
+            // ---- UserId ile isim degisikligi tespiti ----
+            NSString *flag = @"";
+            NSArray *hist = @[];
+            if (uid.length > 0) {
+                NSDictionary *rec = g_playerDB[uid];
+                NSString *last = rec[@"last"];
+                NSMutableArray *all = rec[@"all"] ? [rec[@"all"] mutableCopy] : [NSMutableArray array];
+                if (last && ![last isEqualToString:nick]) {
+                    flag = @"  ⚠️";
+                    changedCount++;
+                    FLog([NSString stringWithFormat:@"ISIM DEGISTI: %@ -> %@ (uid %@)", last, nick, uid]);
+                }
+                if (![all containsObject:nick]) [all addObject:nick];
+                g_playerDB[uid] = @{@"last": nick, @"all": all};
+                hist = all;
+            }
+            [rows addObject:@{@"title": [NSString stringWithFormat:@"%@%@  #%d%@", master ? @"\U0001F451 " : @"", nick, actor, flag],
+                              @"nick": nick, @"uid": uid, @"hist": hist}];
+        }
+        savePlayerDB();
+    } @catch (...) { FLog(@"Oyuncu listesi okunamadi"); return; }
+
+    if (rows.count == 0) { FLog(@"Odada oyuncu bulunamadi"); return; }
+    FLog([NSString stringWithFormat:@"Odada %lu oyuncu, %d isim degisikligi", (unsigned long)rows.count, changedCount]);
+
+    NSString *msg = (changedCount > 0)
+        ? [NSString stringWithFormat:@"%lu kisi - ⚠️ %d kisi ismini degistirmis", (unsigned long)rows.count, changedCount]
+        : [NSString stringWithFormat:@"%lu kisi - detay icin sec", (unsigned long)rows.count];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F465 Odadaki Oyuncular"
+                                                               message:msg preferredStyle:UIAlertControllerStyleAlert];
+    for (NSDictionary *r in rows) {
+        [ac addAction:[UIAlertAction actionWithTitle:r[@"title"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            [self showPlayerDetail:r];
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"Kapat" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
+// Secilen oyuncunun kimligi + bu UserId ile gorulmus tum isimler
+- (void)showPlayerDetail:(NSDictionary*)r {
+    NSString *nick = r[@"nick"];
+    NSString *uid  = r[@"uid"];
+    NSArray  *hist = r[@"hist"];
+
+    NSMutableString *m = [NSMutableString string];
+    [m appendFormat:@"Su anki isim: %@\n", nick];
+    if (uid.length > 0) {
+        [m appendFormat:@"UserId: %@\n", uid];
+        if (hist.count > 1) {
+            [m appendFormat:@"\n⚠️ Bu kisi %lu farkli isim kullanmis:\n", (unsigned long)hist.count];
+            for (NSString *n in hist) [m appendFormat:@"  • %@\n", n];
+        } else {
+            [m appendString:@"\nBu kisi hep ayni ismi kullanmis."];
+        }
+    } else {
+        [m appendString:@"UserId bos - oyun kimlik dogrulama kullanmiyor,\nbu kisi isim degisikligi icin takip edilemez."];
+    }
+
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F50D Oyuncu Detayi"
+                                                               message:m preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"\U0001F4CB Ismi Kopyala" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        [UIPasteboard generalPasteboard].string = nick;
+        FLog([NSString stringWithFormat:@"Isim kopyalandi: %@", nick]);
+    }]];
+    if (uid.length > 0) {
+        [ac addAction:[UIAlertAction actionWithTitle:@"\U0001F511 UserId Kopyala" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            [UIPasteboard generalPasteboard].string = uid;
+            FLog([NSString stringWithFormat:@"UserId kopyalandi: %@", uid]);
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"Kapat" style:UIAlertActionStyleCancel handler:nil]];
     [self present:ac];
 }
 
@@ -1551,8 +1809,15 @@ static void h_addMoney(void* self, int amount) {
     [st appendFormat:@"Time:%@ RB-vel:%@ RB-pos:%@\n", g_mSetTS?@"✓":@"✗", g_mRbSetVel?@"✓":@"✗", rb_setPos?@"✓":@"✗"];
     [st appendFormat:@"TMP-rich:%@ RoomOpt:%@ CreateRoom:%@ RoomName:%@\n", g_mSetRichText?@"✓":@"✗", g_roomOptionsClass?@"✓":@"✗", pn_createRoom?@"✓":@"✗", rinfo_getName?@"✓":@"✗"];
     [st appendString:@"── araba hook tetiklenme ──\n"];
+    [st appendFormat:@"*ANA* CarPlayerInput.FixedUpdate: %ld\n", fInput];
+    [st appendFormat:@"CarDriveSystem:%@ CarNitro:%@\n", g_carDrive?@"✓":@"✗", g_carNitro?@"✓":@"✗"];
+    [st appendFormat:@"AracPanel:%@ guc=%.1f dir=%.1f maks=%.0f\n", isCarPanelEnabled?@"A":@"K", carAccelPower, carSteerPower, carTopSpeed];
     [st appendFormat:@"nitro:%ld drive:%ld plate:%ld\nRCCP:%ld smRCC:%ld smPUN:%ld\n", fNitro, fDrive, fPlate, fRccp, fSmRCC, fSmPUN];
     [st appendFormat:@"Rigidbody(g_rb): %@  %@\n", g_rb?@"YAKALANDI ✓":@"YOK ✗", g_rb?@"(zipla/ucus/isinla calisir)":@"(arabaya bin+sur)"];
+    [st appendString:@"── BASE TESTI (araba disi hook) ──\n"];
+    [st appendFormat:@"timeScale:%ld chat:%ld odaSatir:%ld odaKurBtn:%ld baglanti:%ld\n", fTS, fChat, fRoomLine, fCreateBtn, fConn];
+    long nonCar = fTS + fChat + fRoomLine + fCreateBtn + fConn;
+    [st appendFormat:@"SONUC: %@\n", nonCar > 0 ? @"HOOKLAR CALISIYOR -> sorun araba sinifi" : @"HICBIR HOOK CALISMIYOR -> OFFSET/BASE OLU"];
     [st appendString:@"── ozellik durumlari ──\n"];
     [st appendFormat:@"Hiz:%dx Nitro:%@ Ucus:%@ DusukG:%@\n", speedMode, isInfiniteNitroEnabled?@"A":@"K", isFlyEnabled?@"A":@"K", isLowGravEnabled?@"A":@"K"];
     [st appendFormat:@"RenkliChat:%@ Spam:%@ ASCII:%@ Sifre:%@\n", isColorChatEnabled?@"A":@"K", isSpamEnabled?@"A":@"K", isAsciiAnimEnabled?@"A":@"K", isBypassPasswordEnabled?@"A":@"K"];
@@ -1606,6 +1871,10 @@ static void h_addMoney(void* self, int amount) {
 static void restoreSettings(void) {
     speedMode              = loadInt(@"speedMode", 1);
     isInfiniteNitroEnabled = loadBool(@"nitro", false);
+    isCarPanelEnabled      = loadBool(@"carpanel", false);
+    carAccelPower          = loadFloat(@"caraccel", 3.0f);
+    carSteerPower          = loadFloat(@"carsteer", 1.0f);
+    carTopSpeed            = loadFloat(@"cartop",   300.0f);
     isColorChatEnabled     = loadBool(@"colorchat", false);
     isSpamEnabled          = loadBool(@"chatspam", false);
     isBypassPasswordEnabled= loadBool(@"bypass", true);
@@ -1668,12 +1937,19 @@ static void InstallEverything(uintptr_t b) {
     lobby_createRoom          = (void(*)(void*))(b + 0x54A94A4);
     lobby_leaveRoom           = (void(*)(void*))(b + 0x54A9F1C);
     pn_createRoom             = (bool(*)(void*,void*,void*,void*))(b + 0x5939B4C);
+    pn_getPlayerList          = (void*(*)(void))(b + 0x59339D0);
+    ply_getNickName           = (void*(*)(void*))(b + 0x5924574);
+    ply_getActorNumber        = (int(*)(void*))(b + 0x592455C);
+    ply_getIsMaster           = (bool(*)(void*))(b + 0x5924640);
+    ply_getUserId             = (void*(*)(void*))(b + 0x5924630);
+    lobby_carSelectMenu       = (void(*)(void*))(b + 0x54ABFD4);
 
     safeHook((void*)(b + 0x6771918), (void*)h_setTimeScale,  (void**)&o_setTimeScale,     "set_timeScale");
     safeHook((void*)(b + 0x5938844), (void*)h_closeConnection,(void**)&o_closeConnection, "CloseConnection");
     safeHook((void*)(b + 0x54CFE14), (void*)h_getNitro,       (void**)&o_getNitro,        "get_nitroAmount");
     safeHook((void*)(b + 0x54CFE1C), (void*)h_setNitro,       (void**)&o_setNitro,        "set_nitroAmount");
     safeHook((void*)(b + 0x54CCAA0), (void*)h_driveMove,      (void**)&o_driveMove,       "CarDriveSystem.Move");
+    safeHook((void*)(b + 0x54D0BC0), (void*)h_playerInputFixed,(void**)&o_playerInputFixed,"CarPlayerInput.FixedUpdate *ANA*");
     safeHook((void*)(b + 0x59C4BCC), (void*)h_rccpUpdate,     (void**)&o_rccpUpdate,      "RCCP.Update(rb yakala)");
     safeHook((void*)(b + 0x5A57390), (void*)h_smRCC,          (void**)&o_smRCC,           "SmoothSyncRCC.Update(rb!)");
     safeHook((void*)(b + 0x5A4F72C), (void*)h_smPUN,          (void**)&o_smPUN,           "SmoothSyncPUN2.Update");
@@ -1700,7 +1976,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v24.4 basladi, UnityFramework araniyor...");
+    FLog(@"v24.9 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
