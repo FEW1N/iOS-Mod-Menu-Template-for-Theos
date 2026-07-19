@@ -191,6 +191,16 @@ static void* g_mSetRichText = NULL; // TMP_Text.set_richText MethodInfo* (oda is
 static void* (*i_object_new)(void*) = NULL;   // il2cpp_object_new
 static void* g_roomOptionsClass = NULL;       // Photon.Realtime.RoomOptions Il2CppClass*
 static bool  g_il2cppReady = false;
+// ==== ARAC DEGISTIRME (hooksuz, il2cpp singleton uzerinden) ====
+// HR_MainMenuHandler: static field 'iiz' = singleton
+// metodlar: SelectCar / PositiveCarIndex / NegativeCarIndex / BuyCar
+static void* (*i_class_get_field_from_name)(void*, const char*) = NULL;
+static void  (*i_field_static_get_value)(void*, void*) = NULL;
+static void* g_mmhClass   = NULL;   // HR_MainMenuHandler Il2CppClass*
+static void* g_mmhField   = NULL;   // 'iiz' static field
+static void* g_mSelectCar = NULL;
+static void* g_mNextCar   = NULL;
+static void* g_mPrevCar   = NULL;
 
 static void few1n_initIl2cpp(void) {
     i_domain_get                = (void*(*)(void))dlsym(RTLD_DEFAULT, "il2cpp_domain_get");
@@ -201,6 +211,8 @@ static void few1n_initIl2cpp(void) {
     i_runtime_invoke            = (void*(*)(void*,void*,void**,void**))dlsym(RTLD_DEFAULT, "il2cpp_runtime_invoke");
     i_thread_attach             = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_thread_attach");
     i_object_new                = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_object_new");
+    i_class_get_field_from_name = (void*(*)(void*,const char*))dlsym(RTLD_DEFAULT, "il2cpp_class_get_field_from_name");
+    i_field_static_get_value    = (void(*)(void*,void*))dlsym(RTLD_DEFAULT, "il2cpp_field_static_get_value");
     if (!i_domain_get || !i_domain_get_assemblies || !i_assembly_get_image ||
         !i_class_from_name || !i_class_get_method_from_name || !i_runtime_invoke) {
         FLog(@"il2cpp API bulunamadi!"); return;
@@ -219,6 +231,18 @@ static void few1n_initIl2cpp(void) {
                 g_mSetTS = i_class_get_method_from_name(timeClass, "set_timeScale", 1);
                 g_mGetTS = i_class_get_method_from_name(timeClass, "get_timeScale", 0);
                 FLog([NSString stringWithFormat:@"Time bulundu! set=%p get=%p", g_mSetTS, g_mGetTS]);
+            }
+        }
+        if (!g_mmhClass) {
+            void* c = i_class_from_name(img, "", "HR_MainMenuHandler");
+            if (c) {
+                g_mmhClass   = c;
+                g_mSelectCar = i_class_get_method_from_name(c, "SelectCar", 0);
+                g_mNextCar   = i_class_get_method_from_name(c, "PositiveCarIndex", 0);
+                g_mPrevCar   = i_class_get_method_from_name(c, "NegativeCarIndex", 0);
+                if (i_class_get_field_from_name) g_mmhField = i_class_get_field_from_name(c, "iiz");
+                FLog([NSString stringWithFormat:@"MainMenuHandler bulundu! sec=%p ileri=%p geri=%p singleton=%p",
+                      g_mSelectCar, g_mNextCar, g_mPrevCar, g_mmhField]);
             }
         }
         if (!g_mRbSetVel) {
@@ -315,7 +339,15 @@ static NSString* readStr(void* il2s) {
 static void safeHook(void* target, void* replacement, void** original, const char* name) {
     NSString* nm = [NSString stringWithUTF8String:name];
     if (!target) { FLog([@"SKIP (NULL) " stringByAppendingString:nm]); hookFailCount++; return; }
+    if (original) *original = NULL;
     MSHookFunction(target, replacement, original);
+    // GERCEK dogrulama: MSHookFunction basarili olursa *original orijinal koda isaret eder.
+    // Sideload'da (Substrate yok) MSHookFunction sessizce hicbir sey yapmaz -> *original NULL kalir.
+    if (original && *original == NULL) {
+        FLog([NSString stringWithFormat:@"FAIL (hook yazilamadi) %@", nm]);
+        hookFailCount++;
+        return;
+    }
     FLog([NSString stringWithFormat:@"OK  %@", nm]);
     hookSuccessCount++;
 }
@@ -683,16 +715,17 @@ static void h_addMoney(void* self, int amount) {
 // =============================================================
 //  UI
 // =============================================================
-#define C_BG     [UIColor colorWithRed:0.04 green:0.06 blue:0.10 alpha:0.65]
-#define C_CARD   [UIColor colorWithRed:1.0 green:1.0 blue:1.0 alpha:0.06]
-#define C_ON     [UIColor colorWithRed:0.0 green:1.0 blue:0.53 alpha:1.0]
-#define C_OFF    [UIColor colorWithRed:0.22 green:0.25 blue:0.32 alpha:1.0]
-#define C_RED    [UIColor colorWithRed:1.0 green:0.22 blue:0.38 alpha:1.0]
-#define C_ACCENT [UIColor colorWithRed:0.52 green:0.22 blue:1.0 alpha:1.0]
-#define C_GOLD   [UIColor colorWithRed:1.0 green:0.73 blue:0.15 alpha:1.0]
-#define C_CYAN   [UIColor colorWithRed:0.0 green:0.90 blue:1.0 alpha:1.0]
-#define C_TEXT   [UIColor colorWithWhite:1.0 alpha:0.95]
-#define C_SUB    [UIColor colorWithWhite:1.0 alpha:0.50]
+// ==== BEYAZ / BUZ MAVISI NEON TEMA ====
+#define C_BG     [UIColor colorWithRed:0.03 green:0.07 blue:0.11 alpha:0.72]
+#define C_CARD   [UIColor colorWithRed:0.60 green:0.90 blue:1.0 alpha:0.09]
+#define C_ON     [UIColor colorWithRed:0.45 green:0.93 blue:1.0 alpha:1.0]   // buz mavisi neon
+#define C_OFF    [UIColor colorWithRed:0.18 green:0.26 blue:0.33 alpha:1.0]
+#define C_RED    [UIColor colorWithRed:1.0 green:0.35 blue:0.55 alpha:1.0]
+#define C_ACCENT [UIColor colorWithRed:0.70 green:0.95 blue:1.0 alpha:1.0]   // beyaza calan buz
+#define C_GOLD   [UIColor colorWithRed:0.85 green:0.97 blue:1.0 alpha:1.0]   // parlak buz beyazi
+#define C_CYAN   [UIColor colorWithRed:0.30 green:0.85 blue:1.0 alpha:1.0]
+#define C_TEXT   [UIColor colorWithRed:0.94 green:0.99 blue:1.0 alpha:1.0]
+#define C_SUB    [UIColor colorWithRed:0.65 green:0.85 blue:0.95 alpha:0.62]
 
 @interface FEW1NMenu : NSObject
 @property (nonatomic, strong) UIButton *fab;
@@ -796,7 +829,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v24.9 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v25.1 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1190,6 +1223,8 @@ static void h_addMoney(void* self, int amount) {
     if (++tc >= 7) {
         tc = 0;
         float ts = g_il2cppReady ? getTimeScaleVal() : (ts_get ? ts_get() : -1.0f);
+        FLog([NSString stringWithFormat:@"[DIAG] *ANA*Input=%ld | hookOK=%d hookFAIL=%d",
+              fInput, hookSuccessCount, hookFailCount]);
         FLog([NSString stringWithFormat:@"[DIAG] nitro=%ld drive=%ld plate=%ld RCCP=%ld smRCC=%ld smPUN=%ld",
               fNitro, fDrive, fPlate, fRccp, fSmRCC, fSmPUN]);
         FLog([NSString stringWithFormat:@"[DIAG] rb=%@ rbMethod=%@ nitroDeg=%.2f il2cpp=%@",
@@ -1447,14 +1482,54 @@ static void h_addMoney(void* self, int amount) {
 }
 
 // ===== OYUN ICI ARAC DEGISTIRME =====
+// HR_MainMenuHandler singleton'ini il2cpp static field uzerinden al
+static void* few1n_getMainMenu(void) {
+    if (!g_mmhField || !i_field_static_get_value) return NULL;
+    void* inst = NULL;
+    @try { i_field_static_get_value(g_mmhField, &inst); } @catch (...) { return NULL; }
+    return inst;
+}
+// Parametresiz bir MethodInfo'yu il2cpp uzerinden cagir
+static bool few1n_invoke0(void* method, void* obj, const char* label) {
+    if (!method || !i_runtime_invoke) { FLog([NSString stringWithFormat:@"%s: metod yok", label]); return false; }
+    if (!obj) { FLog([NSString stringWithFormat:@"%s: nesne yok", label]); return false; }
+    @try { i_runtime_invoke(method, obj, NULL, NULL); FLog([NSString stringWithFormat:@"%s: calisti", label]); return true; }
+    @catch (...) { FLog([NSString stringWithFormat:@"%s: cagri hatasi", label]); return false; }
+}
+
 - (void)openCarSelect {
-    if (!lobbyGetInst || !lobby_carSelectMenu) { FLog(@"Arac secim pointeri yok"); return; }
-    @try {
-        void* lobby = lobbyGetInst();
-        if (!lobby) { FLog(@"Lobi bulunamadi - odada olmalisin"); return; }
-        lobby_carSelectMenu(lobby);
-        FLog(@"Arac secim menusu acildi");
-    } @catch (...) { FLog(@"Arac secim menusu acilamadi"); }
+    // Her adim loglanir ki "tepki yok" durumunda nerede takildigi gorulsun
+    FLog(@"--- Arac degistirme denemesi ---");
+    // Adim 1 - Lobi yolu: HR_PhotonLobbyManager.EnableCarSelectionMenu
+    if (!lobbyGetInst)         FLog(@"Adim1:lobbyGetInst pointeri YOK");
+    else if (!lobby_carSelectMenu) FLog(@"Adim1:EnableCarSelectionMenu pointeri YOK");
+    else {
+        void* lobby = NULL;
+        @try { lobby = lobbyGetInst(); } @catch (...) {}
+        if (!lobby) FLog(@"Adim1:Lobi nesnesi YOK (yaris sahnesinde lobi olmayabilir)");
+        else {
+            @try { lobby_carSelectMenu(lobby); FLog(@"Adim1:Lobi yoluyla acildi"); return; }
+            @catch (...) { FLog(@"Adim1:Lobi cagrisi hata verdi"); }
+        }
+    }
+    // Adim 2 - Ana menu yolu: HR_MainMenuHandler singleton + il2cpp
+    void* mm = few1n_getMainMenu();
+    if (!mm) { FLog(@"Adim2:MainMenuHandler bulunamadi - bu sahnede arac degistirilemiyor"); return; }
+    FLog(@"Adim2:MainMenuHandler bulundu, arac menusu kullanilabilir");
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F504 Arac Degistir"
+                                                               message:@"Araclar arasinda gez, sonra sec"
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"➡️ Sonraki Arac" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        few1n_invoke0(g_mNextCar, few1n_getMainMenu(), "Sonraki arac");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⬅️ Onceki Arac" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        few1n_invoke0(g_mPrevCar, few1n_getMainMenu(), "Onceki arac");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"✅ Bu Araci Sec" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        few1n_invoke0(g_mSelectCar, few1n_getMainMenu(), "Arac secildi");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Kapat" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
 }
 
 // ===== ARAC KONTROL PANELI =====
@@ -1976,7 +2051,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v24.9 basladi, UnityFramework araniyor...");
+    FLog(@"v25.1 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
