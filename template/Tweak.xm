@@ -209,6 +209,8 @@ static void* g_mPrevCar   = NULL;
 static void* (*i_class_get_type)(void*) = NULL;
 static void* (*i_type_get_object)(void*) = NULL;
 static void* g_mFindObjectOfType = NULL;   // UnityEngine.Object.FindObjectOfType(Type)
+static void* g_mFindObjInactive  = NULL;   // FindObjectOfType(Type, bool includeInactive)
+static void* g_mFindAnyByType    = NULL;   // FindAnyObjectByType(Type)
 static void* g_carDriveTypeObj   = NULL;   // typeof(CarDriveSystem)
 static void* g_carInputTypeObj   = NULL;   // typeof(CarPlayerInput)
 
@@ -250,7 +252,10 @@ static void few1n_initIl2cpp(void) {
             void* oc = i_class_from_name(img, "UnityEngine", "Object");
             if (oc) {
                 g_mFindObjectOfType = i_class_get_method_from_name(oc, "FindObjectOfType", 1);
-                if (g_mFindObjectOfType) FLog([NSString stringWithFormat:@"FindObjectOfType bulundu! %p", g_mFindObjectOfType]);
+                g_mFindObjInactive  = i_class_get_method_from_name(oc, "FindObjectOfType", 2);
+                g_mFindAnyByType    = i_class_get_method_from_name(oc, "FindAnyObjectByType", 1);
+                FLog([NSString stringWithFormat:@"Bulucular: tek=%p ikili=%p any=%p",
+                      g_mFindObjectOfType, g_mFindObjInactive, g_mFindAnyByType]);
             }
         }
         // typeof(CarDriveSystem) ve typeof(CarPlayerInput)
@@ -395,11 +400,35 @@ static NSString* readStr(void* il2s) {
         return [NSString stringWithCharacters:(unichar*)((uintptr_t)il2s + 0x14) length:len];
     } @catch (...) { return @""; }
 }
+// Substrate calisiyor mu? Bagli sembol bos stub olabilir -> dlsym ile gercegini ara.
+typedef void (*MSHookFn)(void*, void*, void**);
+static MSHookFn g_msHook = NULL;
+static bool g_msHookChecked = false;
+static void few1n_probeSubstrate(void) {
+    if (g_msHookChecked) return;
+    g_msHookChecked = true;
+    // Substrate / ElleKit / libhooker isimlerini sirayla dene
+    g_msHook = (MSHookFn)dlsym(RTLD_DEFAULT, "MSHookFunction");
+    if (g_msHook) { FLog([NSString stringWithFormat:@"Substrate VAR: MSHookFunction=%p", (void*)g_msHook]); return; }
+    g_msHook = (MSHookFn)dlsym(RTLD_DEFAULT, "LHHookFunctions");   // libhooker
+    if (g_msHook) { FLog(@"libhooker bulundu (LHHookFunctions)"); return; }
+    void* ek = dlopen("/var/jb/usr/lib/libellekit.dylib", RTLD_LAZY);
+    if (!ek) ek = dlopen("/usr/lib/libsubstrate.dylib", RTLD_LAZY);
+    if (ek) {
+        g_msHook = (MSHookFn)dlsym(ek, "MSHookFunction");
+        FLog(g_msHook ? @"ElleKit/Substrate dylib ile yuklendi" : @"dylib acildi ama MSHookFunction yok");
+        return;
+    }
+    FLog(@"SUBSTRATE YOK! Hicbir hook motoru bulunamadi -> il2cpp yolu kullaniliyor");
+}
+
 static void safeHook(void* target, void* replacement, void** original, const char* name) {
     NSString* nm = [NSString stringWithUTF8String:name];
     if (!target) { FLog([@"SKIP (NULL) " stringByAppendingString:nm]); hookFailCount++; return; }
     if (original) *original = NULL;
-    MSHookFunction(target, replacement, original);
+    few1n_probeSubstrate();
+    if (g_msHook) g_msHook(target, replacement, original);   // dlsym ile bulunan gercek motor
+    else MSHookFunction(target, replacement, original);      // bagli sembol (stub olabilir)
     // GERCEK dogrulama: MSHookFunction basarili olursa *original orijinal koda isaret eder.
     // Sideload'da (Substrate yok) MSHookFunction sessizce hicbir sey yapmaz -> *original NULL kalir.
     if (original && *original == NULL) {
@@ -589,13 +618,38 @@ static void h_driveMove(void* self, float a, float b, float c, float d) {
 static long fFind = 0;      // basarili arama sayisi
 static void* g_carDrive = NULL;
 static void* g_carNitro = NULL;
+// Bir tipi 3 farkli Unity API'siyle aramayi dener (aktif olmayanlar dahil)
+static void* few1n_findByType(void* typeObj) {
+    if (!typeObj || !i_runtime_invoke) return NULL;
+    void* r = NULL;
+    // Yol 1 - FindObjectOfType Type,true : pasif nesneleri de bulur
+    if (g_mFindObjInactive) {
+        bool inc = true;
+        void* a[2]; a[0] = typeObj; a[1] = &inc;
+        @try { r = i_runtime_invoke(g_mFindObjInactive, NULL, a, NULL); } @catch (...) {}
+        if (r) return r;
+    }
+    // Yol 2 - FindObjectOfType Type
+    if (g_mFindObjectOfType) {
+        void* a[1]; a[0] = typeObj;
+        @try { r = i_runtime_invoke(g_mFindObjectOfType, NULL, a, NULL); } @catch (...) {}
+        if (r) return r;
+    }
+    // Yol 3 - FindAnyObjectByType Type : Unity 6 yeni API
+    if (g_mFindAnyByType) {
+        void* a[1]; a[0] = typeObj;
+        @try { r = i_runtime_invoke(g_mFindAnyByType, NULL, a, NULL); } @catch (...) {}
+        if (r) return r;
+    }
+    return NULL;
+}
+
 static void few1n_findCar(void) {
-    if (!g_mFindObjectOfType || !i_runtime_invoke) return;
+    if (!i_runtime_invoke) return;
     @try {
         // Adim 1 - CarDriveSystem'i bul
         if (g_carDriveTypeObj) {
-            void* args[1]; args[0] = g_carDriveTypeObj;
-            void* found = i_runtime_invoke(g_mFindObjectOfType, NULL, args, NULL);
+            void* found = few1n_findByType(g_carDriveTypeObj);
             if (found) {
                 g_carDrive = found;
                 fFind++;
@@ -607,8 +661,7 @@ static void few1n_findCar(void) {
         }
         // Adim 2 - CarPlayerInput'u bul, nitro icin
         if (g_carInputTypeObj) {
-            void* args2[1]; args2[0] = g_carInputTypeObj;
-            void* inp = i_runtime_invoke(g_mFindObjectOfType, NULL, args2, NULL);
+            void* inp = few1n_findByType(g_carInputTypeObj);
             if (inp) {
                 void* nos = *(void**)((uintptr_t)inp + 0x28);    // jhs -> CarNitro
                 if (nos) g_carNitro = nos;
@@ -961,7 +1014,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v25.3 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
+    ver.text = [NSString stringWithFormat:@"v25.5 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
     ver.textColor = C_CYAN;
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1356,8 +1409,10 @@ static void h_addMoney(void* self, int amount) {
     if (++tc >= 7) {
         tc = 0;
         float ts = g_il2cppReady ? getTimeScaleVal() : (ts_get ? ts_get() : -1.0f);
-        FLog([NSString stringWithFormat:@"[DIAG] ARAMA=%ld carDrive=%@ | hookOK=%d hookFAIL=%d",
-              fFind, g_carDrive ? @"VAR" : @"YOK", hookSuccessCount, hookFailCount]);
+        FLog([NSString stringWithFormat:@"[DIAG] ARAMA=%ld carDrive=%@ | bulucu=%@ tip=%@",
+              fFind, g_carDrive ? @"VAR" : @"YOK",
+              (g_mFindObjInactive || g_mFindObjectOfType || g_mFindAnyByType) ? @"VAR" : @"YOK",
+              g_carDriveTypeObj ? @"VAR" : @"YOK"]);
         FLog([NSString stringWithFormat:@"[DIAG] nitro=%ld drive=%ld plate=%ld RCCP=%ld smRCC=%ld smPUN=%ld",
               fNitro, fDrive, fPlate, fRccp, fSmRCC, fSmPUN]);
         FLog([NSString stringWithFormat:@"[DIAG] rb=%@ rbMethod=%@ nitroDeg=%.2f il2cpp=%@",
@@ -2184,7 +2239,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v25.3 basladi, UnityFramework araniyor...");
+    FLog(@"v25.5 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
