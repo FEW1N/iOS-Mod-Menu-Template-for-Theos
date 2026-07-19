@@ -193,6 +193,11 @@ static void* g_mSetRichText = NULL; // TMP_Text.set_richText MethodInfo* (oda is
 static void* (*i_object_new)(void*) = NULL;   // il2cpp_object_new
 static void* g_roomOptionsClass = NULL;       // Photon.Realtime.RoomOptions Il2CppClass*
 static bool  g_il2cppReady = false;
+// ==== ESP (Camera + tum arabalar) ====
+static void* g_mCamGetMain = NULL;     // UnityEngine.Camera.get_main
+static void* g_mWorldToScreen = NULL;  // Camera.WorldToScreenPoint(Vector3)->Vector3
+static void* g_mFindObjectsPlural = NULL; // Object.FindObjectsOfType(Type)->array (TUM nesneler)
+static bool  isEspEnabled = false;
 // ==== ARAC DEGISTIRME (hooksuz, il2cpp singleton uzerinden) ====
 // HR_MainMenuHandler: static field 'iiz' = singleton
 // metodlar: SelectCar / PositiveCarIndex / NegativeCarIndex / BuyCar
@@ -208,6 +213,33 @@ static void* g_mPrevCar   = NULL;
 // UnityEngine.Object.FindObjectOfType(Type) ile arabayi her saniye ARIYORUZ.
 static void* (*i_class_get_type)(void*) = NULL;
 static void* (*i_type_get_object)(void*) = NULL;
+// Sinif adiyla tarama (namespace tahmini gerektirmez - en saglam yol)
+static size_t (*i_image_get_class_count)(const void*) = NULL;
+static const void* (*i_image_get_class)(const void*, size_t) = NULL;
+static const char* (*i_class_get_name)(void*) = NULL;
+// Bir image'da verilen isimdeki sinifi TARAYARAK bul (obfuscation'a dayanikli)
+static void* few1n_findClassByName(const void* img, const char* wantName) {
+    if (!i_image_get_class_count || !i_image_get_class || !i_class_get_name) return NULL;
+    @try {
+        size_t cnt = i_image_get_class_count(img);
+        for (size_t k = 0; k < cnt; k++) {
+            void* cls = (void*)i_image_get_class(img, k);
+            if (!cls) continue;
+            const char* nm = i_class_get_name(cls);
+            if (nm && strcmp(nm, wantName) == 0) return cls;
+        }
+    } @catch (...) {}
+    return NULL;
+}
+// Sinif -> System.Type nesnesi (FindObjectOfType icin)
+static void* few1n_typeObjOf(void* cls) {
+    if (!cls || !i_class_get_type || !i_type_get_object) return NULL;
+    @try {
+        void* t = i_class_get_type(cls);
+        if (t) return i_type_get_object(t);
+    } @catch (...) {}
+    return NULL;
+}
 static void* g_mFindObjectOfType = NULL;   // UnityEngine.Object.FindObjectOfType(Type)
 static void* g_mFindObjInactive  = NULL;   // FindObjectOfType(Type, bool includeInactive)
 static void* g_mFindAnyByType    = NULL;   // FindAnyObjectByType(Type)
@@ -227,6 +259,9 @@ static void few1n_initIl2cpp(void) {
     i_field_static_get_value    = (void(*)(void*,void*))dlsym(RTLD_DEFAULT, "il2cpp_field_static_get_value");
     i_class_get_type            = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_class_get_type");
     i_type_get_object           = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_type_get_object");
+    i_image_get_class_count     = (size_t(*)(const void*))dlsym(RTLD_DEFAULT, "il2cpp_image_get_class_count");
+    i_image_get_class           = (const void*(*)(const void*,size_t))dlsym(RTLD_DEFAULT, "il2cpp_image_get_class");
+    i_class_get_name            = (const char*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_class_get_name");
     if (!i_domain_get || !i_domain_get_assemblies || !i_assembly_get_image ||
         !i_class_from_name || !i_class_get_method_from_name || !i_runtime_invoke) {
         FLog(@"il2cpp API bulunamadi!"); return;
@@ -254,32 +289,36 @@ static void few1n_initIl2cpp(void) {
                 g_mFindObjectOfType = i_class_get_method_from_name(oc, "FindObjectOfType", 1);
                 g_mFindObjInactive  = i_class_get_method_from_name(oc, "FindObjectOfType", 2);
                 g_mFindAnyByType    = i_class_get_method_from_name(oc, "FindAnyObjectByType", 1);
-                FLog([NSString stringWithFormat:@"Bulucular: tek=%p ikili=%p any=%p",
-                      g_mFindObjectOfType, g_mFindObjInactive, g_mFindAnyByType]);
+                g_mFindObjectsPlural= i_class_get_method_from_name(oc, "FindObjectsOfType", 1); // cogul -> array
+                FLog([NSString stringWithFormat:@"Bulucular: tek=%p cogul=%p any=%p",
+                      g_mFindObjectOfType, g_mFindObjectsPlural, g_mFindAnyByType]);
             }
         }
-        // typeof(CarDriveSystem) - her adim ayri loglanir ki nerede takildigi gorulsun
+        // ESP - Camera metodlari
+        if (!g_mCamGetMain) {
+            void* cc = i_class_from_name(img, "UnityEngine", "Camera");
+            if (cc) {
+                g_mCamGetMain    = i_class_get_method_from_name(cc, "get_main", 0);
+                g_mWorldToScreen = i_class_get_method_from_name(cc, "WorldToScreenPoint", 1);
+                FLog([NSString stringWithFormat:@"Camera: main=%p w2s=%p", g_mCamGetMain, g_mWorldToScreen]);
+            }
+        }
+        // typeof(CarDriveSystem) - once namespace ile, olmazsa SINIF TARAYARAK (obfuscation'a dayanikli)
         if (!g_carDriveTypeObj) {
             void* c = i_class_from_name(img, "TurnTheGameOn.IKAvatarDriver", "CarDriveSystem");
             if (!c) c = i_class_from_name(img, "TurnTheGameOn", "CarDriveSystem");
             if (!c) c = i_class_from_name(img, "", "CarDriveSystem");
+            if (!c) c = few1n_findClassByName(img, "CarDriveSystem");   // tam tarama
             if (c) {
-                FLog([NSString stringWithFormat:@"CarDriveSystem SINIF bulundu: %p (getType=%p typeObj=%p)",
-                      c, (void*)i_class_get_type, (void*)i_type_get_object]);
-                if (i_class_get_type) {
-                    void* t = i_class_get_type(c);
-                    if (t && i_type_get_object) g_carDriveTypeObj = i_type_get_object(t);
-                    FLog([NSString stringWithFormat:@"CarDriveSystem tip=%p tipNesnesi=%p", t, g_carDriveTypeObj]);
-                }
+                g_carDriveTypeObj = few1n_typeObjOf(c);
+                FLog([NSString stringWithFormat:@"CarDriveSystem: sinif=%p tipNesnesi=%p", c, g_carDriveTypeObj]);
             }
         }
         if (!g_carInputTypeObj) {
             void* c = i_class_from_name(img, "TurnTheGameOn.IKAvatarDriver", "CarPlayerInput");
             if (!c) c = i_class_from_name(img, "", "CarPlayerInput");
-            if (c && i_class_get_type) {
-                void* t = i_class_get_type(c);
-                if (t && i_type_get_object) g_carInputTypeObj = i_type_get_object(t);
-            }
+            if (!c) c = few1n_findClassByName(img, "CarPlayerInput");
+            if (c) g_carInputTypeObj = few1n_typeObjOf(c);
         }
         if (!g_mmhClass) {
             void* c = i_class_from_name(img, "", "HR_MainMenuHandler");
@@ -428,9 +467,12 @@ static void few1n_probeSubstrate(void) {
     FLog(@"SUBSTRATE YOK! Hicbir hook motoru bulunamadi -> il2cpp yolu kullaniliyor");
 }
 
+static bool g_hooksDead = false;   // ilk hook yazilamadiysa kalanlari deneme (temiz + hizli acilis)
 static void safeHook(void* target, void* replacement, void** original, const char* name) {
     NSString* nm = [NSString stringWithUTF8String:name];
     if (!target) { FLog([@"SKIP (NULL) " stringByAppendingString:nm]); hookFailCount++; return; }
+    // Bir kez basarisiz olduysa MSHookFunction'i tekrar cagirma - hepsi ayni motoru kullanir
+    if (g_hooksDead) { hookFailCount++; return; }
     if (original) *original = NULL;
     few1n_probeSubstrate();
     // Ilk hookta base'in gercekten Mach-O basi olup olmadigini dogrula.
@@ -454,6 +496,7 @@ static void safeHook(void* target, void* replacement, void** original, const cha
     if (original && *original == NULL) {
         FLog([NSString stringWithFormat:@"FAIL (hook yazilamadi) %@", nm]);
         hookFailCount++;
+        if (!g_hooksDead) { g_hooksDead = true; FLog(@">> Hooklar bu ortamda yazilamiyor, kalanlar atlaniyor. il2cpp yolu aktif."); }
         return;
     }
     FLog([NSString stringWithFormat:@"OK  %@", nm]);
@@ -638,6 +681,18 @@ static void h_driveMove(void* self, float a, float b, float c, float d) {
 static long fFind = 0;      // basarili arama sayisi
 static void* g_carDrive = NULL;
 static void* g_carNitro = NULL;
+static int   g_findTick  = 0;   // arama throttle sayaci
+
+// Bir pointer okunabilir/makul mu? (cop pointer dereference crash'ini onler)
+static inline bool ptrOk(void* p) {
+    uintptr_t v = (uintptr_t)p;
+    return v > 0x1000 && v < 0x0000800000000000ULL && (v & 0x7) == 0;
+}
+// Bir Unity nesnesi hala canli mi? Yok edilince m_CachedPtr (+0x10) NULL olur.
+static inline bool unityAlive(void* obj) {
+    if (!ptrOk(obj)) return false;
+    @try { return *(void**)((uintptr_t)obj + 0x10) != NULL; } @catch (...) { return false; }
+}
 // Bir tipi 3 farkli Unity API'siyle aramayi dener (aktif olmayanlar dahil)
 static void* few1n_findByType(void* typeObj) {
     if (!typeObj || !i_runtime_invoke) return NULL;
@@ -664,69 +719,104 @@ static void* few1n_findByType(void* typeObj) {
     return NULL;
 }
 
+// ===== ESP YARDIMCILARI (Camera + tum arabalar, il2cpp) =====
+static void* few1n_getCamera(void) {
+    if (!g_mCamGetMain || !i_runtime_invoke) return NULL;
+    @try { return i_runtime_invoke(g_mCamGetMain, NULL, NULL, NULL); } @catch (...) { return NULL; }
+}
+// Dunya koordinatini ekran koordinatina cevir (x,y=piksel, z=kameraya uzaklik)
+static bool few1n_worldToScreen(void* cam, Vec3 world, Vec3* out) {
+    if (!ptrOk(cam) || !g_mWorldToScreen || !i_runtime_invoke) return false;
+    @try {
+        void* args[1]; args[0] = &world;
+        void* box = i_runtime_invoke(g_mWorldToScreen, cam, args, NULL);
+        if (!ptrOk(box)) return false;
+        *out = *(Vec3*)((uintptr_t)box + 0x10);   // boxed Vector3 unbox
+        return true;
+    } @catch (...) { return false; }
+}
+// Sahnedeki TUM CarDriveSystem'leri getir (kendi + digerleri). +0x18 sayi, +0x20 elemanlar.
+static void* few1n_findAllCars(int* outCount) {
+    *outCount = 0;
+    if (!g_mFindObjectsPlural || !g_carDriveTypeObj || !i_runtime_invoke) return NULL;
+    @try {
+        void* args[1]; args[0] = g_carDriveTypeObj;
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, args, NULL);
+        if (!ptrOk(arr)) return NULL;
+        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+        if (cnt < 0 || cnt > 128) return NULL;
+        *outCount = cnt;
+        return arr;
+    } @catch (...) { return NULL; }
+}
+
+// SADECE ARAMA - pahali FindObjectOfType burada, seyrek cagrilir (tick, 0.3s).
+// Uygulama (nitro/hiz/panel) frameTick'te onbellekten yapilir -> ucuz, her frame.
 static void few1n_findCar(void) {
     if (!i_runtime_invoke) return;
+    g_findTick++;
     @try {
-        // Adim 1 - CarDriveSystem'i bul
-        if (g_carDriveTypeObj) {
+        // Onbellek gecerliligi: yok edilen nesneyi temizle (crash korumasi)
+        if (g_carDrive && !unityAlive(g_carDrive)) { g_carDrive = NULL; g_rb = NULL; g_origTop = 0.0f; }
+        if (g_carNitro && !unityAlive(g_carNitro))   g_carNitro = NULL;
+
+        // Arama throttle: araba yokken her tick, varken ~4 sn'de bir (respawn/degisim yakala)
+        if (((!g_carDrive) || (g_findTick % 12 == 0)) && g_carDriveTypeObj) {
             void* found = few1n_findByType(g_carDriveTypeObj);
-            if (found) {
+            if (ptrOk(found)) {
+                if (found != g_carDrive) fFind++;
                 g_carDrive = found;
-                fFind++;
                 void* rb = *(void**)((uintptr_t)found + 0x48);   // _jfu_k__BackingField
-                if (rb) g_rb = rb;
-            } else {
-                g_carDrive = NULL;   // arabadan indiyse temizle
+                if (ptrOk(rb)) g_rb = rb;
             }
         }
-        // Adim 2 - CarPlayerInput'u bul, nitro icin
-        if (g_carInputTypeObj) {
+        if (((!g_carNitro) || (g_findTick % 12 == 0)) && g_carInputTypeObj) {
             void* inp = few1n_findByType(g_carInputTypeObj);
-            if (inp) {
+            if (ptrOk(inp)) {
                 void* nos = *(void**)((uintptr_t)inp + 0x28);    // jhs -> CarNitro
-                if (nos) g_carNitro = nos;
+                if (ptrOk(nos)) g_carNitro = nos;
             }
         }
-        // SONSUZ NITRO - hooksuz: CarNitro._jhq_k__BackingField (+0x34) surekli doldur
-        if (isInfiniteNitroEnabled && g_carNitro) {
-            *(float*)((uintptr_t)g_carNitro + 0x34) = 1.0f;
+    } @catch (...) {}
+}
+
+// HER FRAME UYGULAMA - onbellekteki pointerlari kullanir, arama YAPMAZ (ucuz).
+static void few1n_applyCar(void) {
+    @try {
+        if (isInfiniteNitroEnabled && ptrOk(g_carNitro)) {
+            *(float*)((uintptr_t)g_carNitro + 0x34) = 1.0f;   // nitro dolu tut
         }
-        // HIZ HILESI - eski h_driveMove hookundan tasindi (hooklar calismiyor)
-        if (g_carDrive) {
-            uintptr_t d = (uintptr_t)g_carDrive;
-            diagDrive  = g_carDrive;
-            diagCurSpd = *(float*)(d + 0x9C);   // currentSpeed
-            diagTopSpd = *(float*)(d + 0x98);   // topSpeed
-            if (speedMode > 1) {
-                if (g_origTop <= 0.0f && diagTopSpd > 0.0f && diagTopSpd < 1000.0f) g_origTop = diagTopSpd;
-                float base = (g_origTop > 0.0f) ? g_origTop : 200.0f;
-                *(float*)(d + 0x98) = base * 3.0f;      // topSpeed cap'ini yukselt
-            } else if (g_origTop > 0.0f && !isCarPanelEnabled) {
-                *(float*)(d + 0x98) = g_origTop; g_origTop = 0.0f;   // eski degere don
-            }
-            // ASIL HIZ: linearVelocity'nin yatay bileseni buyutulur (y'ye dokunulmaz -> ucmaz)
-            if (g_rb && speedMode > 1) {
-                Vec3 v = {0,0,0};
-                rbGetVelIl(g_rb, &v);
-                float horiz = sqrtf(v.x*v.x + v.z*v.z);
-                diagVel = horiz;
-                if (horiz > 0.5f) {
-                    float cap = (speedMode == 2) ? 90.0f : (speedMode == 3) ? 140.0f : 230.0f;
-                    float ns = horiz * 1.06f; if (ns > cap) ns = cap;
-                    float k = ns / horiz;
-                    v.x *= k; v.z *= k;
-                    rbSetVelIl(g_rb, &v);
-                }
+        if (!ptrOk(g_carDrive)) return;
+        uintptr_t d = (uintptr_t)g_carDrive;
+        diagDrive  = g_carDrive;
+        diagCurSpd = *(float*)(d + 0x9C);
+        diagTopSpd = *(float*)(d + 0x98);
+        if (speedMode > 1) {
+            if (g_origTop <= 0.0f && diagTopSpd > 0.0f && diagTopSpd < 1000.0f) g_origTop = diagTopSpd;
+            float base = (g_origTop > 0.0f) ? g_origTop : 200.0f;
+            *(float*)(d + 0x98) = base * 3.0f;
+        } else if (g_origTop > 0.0f && !isCarPanelEnabled) {
+            *(float*)(d + 0x98) = g_origTop; g_origTop = 0.0f;
+        }
+        if (ptrOk(g_rb) && speedMode > 1) {
+            Vec3 v = {0,0,0};
+            rbGetVelIl(g_rb, &v);
+            float horiz = sqrtf(v.x*v.x + v.z*v.z);
+            diagVel = horiz;
+            if (horiz > 0.5f) {
+                float cap = (speedMode == 2) ? 90.0f : (speedMode == 3) ? 140.0f : 230.0f;
+                float ns = horiz * 1.06f; if (ns > cap) ns = cap;
+                float k = ns / horiz;
+                v.x *= k; v.z *= k;
+                rbSetVelIl(g_rb, &v);
             }
         }
-        // Adim 3 - Arac kontrol paneli degerlerini yaz
-        if (isCarPanelEnabled && g_carDrive) {
-            uintptr_t d = (uintptr_t)g_carDrive;
-            *(unsigned char*)(d + 0x61) = 1;              // overrideAcceleration
-            *(float*)(d + 0x6C) = carAccelPower;          // overrideAccelerationPower
-            *(unsigned char*)(d + 0x62) = 1;              // overrideSteering
-            *(float*)(d + 0x64) = carSteerPower;          // overrideSteeringPower
-            *(float*)(d + 0x98) = carTopSpeed;            // topSpeed
+        if (isCarPanelEnabled) {
+            *(unsigned char*)(d + 0x61) = 1;
+            *(float*)(d + 0x6C) = carAccelPower;
+            *(unsigned char*)(d + 0x62) = 1;
+            *(float*)(d + 0x64) = carSteerPower;
+            *(float*)(d + 0x98) = carTopSpeed;
         }
     } @catch (...) {}
 }
@@ -938,6 +1028,11 @@ static void h_addMoney(void* self, int amount) {
 @property (nonatomic, strong) UIScrollView *scrollView;
 @property (nonatomic, strong) UIView *contentView;
 @property (nonatomic, strong) NSMutableDictionary *toggleViews;
+@property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) UIView *statusCard;
+@property (nonatomic, strong) UIView *espOverlay;
+@property (nonatomic, strong) NSMutableArray *espLabels;
+@property (nonatomic, strong) NSTimer *espTimer;
 @property (nonatomic, strong) NSMutableDictionary *speedBtns;
 @property (nonatomic, strong) UIButton *plateBtn;
 @property (nonatomic, strong) UIButton *nameBtn;
@@ -993,7 +1088,9 @@ static void h_addMoney(void* self, int amount) {
     UILabel *fl = [[UILabel alloc] initWithFrame:self.fab.bounds];
     fl.text = @"F1"; fl.textColor = [UIColor whiteColor];
     fl.textAlignment = NSTextAlignmentCenter;
-    fl.font = [UIFont systemFontOfSize:22 weight:UIFontWeightBlack];
+    fl.font = [UIFont systemFontOfSize:21 weight:UIFontWeightBlack];
+    fl.layer.shadowColor = [UIColor blackColor].CGColor;
+    fl.layer.shadowRadius = 2; fl.layer.shadowOpacity = 0.25; fl.layer.shadowOffset = CGSizeMake(0,1);
     [self.fab addSubview:fl];
     [self.fab addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];
     [self.fab addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)]];
@@ -1020,41 +1117,41 @@ static void h_addMoney(void* self, int amount) {
     [self.panel insertSubview:blurV atIndex:0];
     [self.panel addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)]];
 
-    // HEADER
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0,0,pw,60)];
-    header.backgroundColor = [UIColor colorWithWhite:0 alpha:0.2];
+    // HEADER - canli mavi baslik bandi (beyaz metin uzerinde parlar)
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0,0,pw,64)];
+    header.backgroundColor = [UIColor colorWithRed:0.0 green:0.48 blue:0.85 alpha:1.0];
     CAGradientLayer *hgrad = [CAGradientLayer layer];
-    hgrad.frame = CGRectMake(0,0,pw,60);
-    hgrad.colors = @[(id)[UIColor colorWithRed:0.0 green:0.55 blue:0.75 alpha:0.35].CGColor,
-                     (id)[UIColor colorWithRed:0.35 green:0.15 blue:0.75 alpha:0.30].CGColor];
+    hgrad.frame = CGRectMake(0,0,pw,64);
+    hgrad.colors = @[(id)[UIColor colorWithRed:0.05 green:0.62 blue:0.96 alpha:1.0].CGColor,
+                     (id)[UIColor colorWithRed:0.0 green:0.40 blue:0.80 alpha:1.0].CGColor];
     hgrad.startPoint = CGPointMake(0,0); hgrad.endPoint = CGPointMake(1,1);
     [header.layer insertSublayer:hgrad atIndex:0];
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16,10,pw-80,26)];
+    // parlak nokta rozeti
+    UILabel *dotIcon = [[UILabel alloc] initWithFrame:CGRectMake(16,18,22,26)];
+    dotIcon.text = @"\U0001F3CE"; dotIcon.font = [UIFont systemFontOfSize:18];
+    [header addSubview:dotIcon];
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(42,12,pw-90,26)];
     title.text = @"FEW1N MOD MENU"; title.textColor = [UIColor whiteColor];
-    title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBlack];
+    title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
-    UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(16,34,pw-80,16)];
-    ver.text = [NSString stringWithFormat:@"v25.7 Unity6 | Base:0x%lX | H:%d", (unsigned long)global_base, hookSuccessCount];
-    ver.textColor = C_CYAN;
+    UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
+    ver.text = [NSString stringWithFormat:@"v26.1  •  Base 0x%lX", (unsigned long)global_base];
+    ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
     UIButton *cls = [UIButton buttonWithType:UIButtonTypeSystem];
-    cls.frame = CGRectMake(pw-46,10,36,36);
+    cls.frame = CGRectMake(pw-48,14,36,36);
+    cls.backgroundColor = [UIColor colorWithWhite:1 alpha:0.18];
+    cls.layer.cornerRadius = 18;
     [cls setTitle:@"✕" forState:UIControlStateNormal];
-    [cls setTitleColor:[UIColor colorWithWhite:1 alpha:0.6] forState:UIControlStateNormal];
-    cls.titleLabel.font = [UIFont systemFontOfSize:20 weight:UIFontWeightLight];
+    [cls setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    cls.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
     [cls addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];
     [header addSubview:cls];
-    UIView *line = [[UIView alloc] initWithFrame:CGRectMake(0,58,pw,2)];
-    CAGradientLayer *lg = [CAGradientLayer layer];
-    lg.frame = line.bounds; lg.colors = @[(id)C_CYAN.CGColor, (id)C_ACCENT.CGColor];
-    lg.startPoint = CGPointMake(0,0.5); lg.endPoint = CGPointMake(1,0.5);
-    [line.layer addSublayer:lg];
-    [header addSubview:line];
     [self.panel addSubview:header];
 
     // SCROLL
-    self.scrollView = [[UIScrollView alloc] initWithFrame:CGRectMake(0,60,pw,ph-60)];
+    self.scrollView = [[UIScrollView alloc] initWithFrame:CGRectMake(0,64,pw,ph-64)];
     self.scrollView.showsVerticalScrollIndicator = NO;
     [self.panel addSubview:self.scrollView];
     self.contentView = [[UIView alloc] initWithFrame:CGRectMake(0,0,pw,0)];
@@ -1064,7 +1161,10 @@ static void h_addMoney(void* self, int amount) {
 
     y = [self header:@"⚡  HIZ (timeScale)" atY:y];
     UIView *sr = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
-    sr.backgroundColor = C_CARD; sr.layer.cornerRadius = 12;
+    sr.backgroundColor = [UIColor colorWithRed:0.93 green:0.96 blue:0.99 alpha:1.0];
+    sr.layer.cornerRadius = 12;
+    sr.layer.borderWidth = 1.0;
+    sr.layer.borderColor = [UIColor colorWithRed:0.0 green:0.48 blue:0.85 alpha:0.12].CGColor;
     NSArray *labels = @[@"1x", @"2x", @"3x", @"5x"];
     NSArray *vals   = @[@1, @2, @3, @5];
     CGFloat bw = (pw-24-10*3-16)/4;
@@ -1095,10 +1195,13 @@ static void h_addMoney(void* self, int amount) {
     y = [self toggle:@"\U0001F681  Ucus (Hover)"  sub:@"Havada asili kal, surerek uc" key:@"fly" atY:y action:@selector(tapFly)];
     y = [self toggle:@"\U0001FAB6  Dusuk Yercekimi" sub:@"Dusus yavas, floaty" key:@"lowgrav" atY:y action:@selector(tapLowGrav)];
     y = [self actionRow:@"\U0001F53C  ZIPLA (bas)" color:C_ON atY:y action:@selector(jumpTap)];
+    y = [self actionRow:@"\U0001F680  Hiz Patlamasi (boost)" color:C_ON atY:y action:@selector(boostTap)];
+    y = [self actionRow:@"\U0001F9CA  Araci Dondur (anlik dur)" color:C_CYAN atY:y action:@selector(freezeTap)];
     y = [self actionRow:@"\U0001F53C  Yukari Isinlan (takildinca)" color:C_CYAN atY:y action:@selector(teleportUp)];
     y = [self actionRow:@"➡️  Ileri Isinlan (+50)" color:C_CYAN atY:y action:@selector(teleportForward)];
     y = [self actionRow:@"\U0001F4CD  Konum Kaydet" color:C_GOLD atY:y action:@selector(saveTeleportPos)];
     y = [self actionRow:@"\U0001F680  Kayitli Konuma Isinlan" color:C_GOLD atY:y action:@selector(teleportSaved)];
+    y = [self toggle:@"\U0001F441  ESP (oyuncu mesafesi)" sub:@"Diger araclar ekranda mesafeyle" key:@"esp" atY:y action:@selector(tapESP)];
 
     y = [self header:@"\U0001F4AC  CHAT" atY:y];
     y = [self toggle:@"\U0001F3A8  Renkli Chat" sub:@"[FEW1N] prefix + cyan" key:@"colorchat" atY:y action:@selector(tapColorChat)];
@@ -1164,29 +1267,33 @@ static void h_addMoney(void* self, int amount) {
     [self.moneyBtn addTarget:self action:@selector(addMoneyTap) forControlEvents:UIControlEventTouchUpInside];
     y = [self actionRow:@"✏️  Para Miktarini Ayarla" color:C_CYAN atY:y action:@selector(editMoneyAmount)];
 
-    UIView *sc = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,36)];
-    UILabel *sl = [[UILabel alloc] initWithFrame:CGRectMake(0,0,pw-24,36)];
-    if (global_base != 0) {
-        sc.backgroundColor = [UIColor colorWithRed:0.0 green:1.0 blue:0.53 alpha:0.08];
-        sl.text = [NSString stringWithFormat:@"✅ Hooklar aktif (%d)", hookSuccessCount];
+    UIView *sc = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,38)];
+    UILabel *sl = [[UILabel alloc] initWithFrame:CGRectMake(0,0,pw-24,38)];
+    sc.layer.cornerRadius = 11;
+    sc.layer.borderWidth = 1.0;
+    if (global_base != 0 && g_il2cppReady) {
+        sc.backgroundColor = [UIColor colorWithRed:0.0 green:0.55 blue:0.85 alpha:0.10];
+        sc.layer.borderColor = [UIColor colorWithRed:0.0 green:0.55 blue:0.85 alpha:0.35].CGColor;
+        sl.text = g_rb ? @"\U0001F7E2 il2cpp OK  •  Araba bagli" : @"\U0001F7E1 il2cpp OK  •  Arabaya bin";
         sl.textColor = C_ON;
     } else {
-        sc.backgroundColor = [UIColor colorWithRed:1.0 green:0.22 blue:0.38 alpha:0.08];
-        sl.text = @"❌ Framework bulunamadi";
+        sc.backgroundColor = [UIColor colorWithRed:0.90 green:0.20 blue:0.35 alpha:0.10];
+        sc.layer.borderColor = [UIColor colorWithRed:0.90 green:0.20 blue:0.35 alpha:0.35].CGColor;
+        sl.text = @"\U0001F534 Framework/il2cpp bekleniyor";
         sl.textColor = C_RED;
     }
-    sc.layer.cornerRadius = 10;
+    self.statusLabel = sl; self.statusCard = sc;
     sl.textAlignment = NSTextAlignmentCenter;
     sl.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
     [sc addSubview:sl];
     [self.contentView addSubview:sc];
-    y += 44;
+    y += 46;
 
     y = [self actionRow:@"\U0001F4CB  Loglari Goster (hata teshisi)" color:C_CYAN atY:y action:@selector(showLog)];
 
     UILabel *foot = [[UILabel alloc] initWithFrame:CGRectMake(0,y+4,pw,24)];
-    foot.text = @"made by few1n \U0001F5A4";
-    foot.textColor = [UIColor colorWithWhite:0.3 alpha:1];
+    foot.text = @"made by few1n  •  il2cpp engine";
+    foot.textColor = [UIColor colorWithRed:0.45 green:0.55 blue:0.65 alpha:1.0];
     foot.textAlignment = NSTextAlignmentCenter;
     foot.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
     [self.contentView addSubview:foot];
@@ -1235,9 +1342,13 @@ static void h_addMoney(void* self, int amount) {
 - (CGFloat)toggle:(NSString*)tl sub:(NSString*)sub key:(NSString*)key atY:(CGFloat)y action:(SEL)action {
     CGFloat pw = self.panel.bounds.size.width;
     UIView *card = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,56)];
-    card.backgroundColor = C_CARD; card.layer.cornerRadius = 14;
+    card.backgroundColor = [UIColor colorWithRed:0.97 green:0.985 blue:1.0 alpha:1.0];
+    card.layer.cornerRadius = 14;
     card.layer.borderWidth = 1.0;
-    card.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.04].CGColor;
+    card.layer.borderColor = [UIColor colorWithRed:0.0 green:0.48 blue:0.85 alpha:0.14].CGColor;
+    card.layer.shadowColor = [UIColor colorWithRed:0.0 green:0.35 blue:0.65 alpha:1.0].CGColor;
+    card.layer.shadowRadius = 5; card.layer.shadowOpacity = 0.10;
+    card.layer.shadowOffset = CGSizeMake(0,2);
     UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(16,8,pw-100,22)];
     t.text = tl; t.textColor = C_TEXT;
     t.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
@@ -1264,7 +1375,13 @@ static void h_addMoney(void* self, int amount) {
 - (CGFloat)actionRow:(NSString*)text color:(UIColor*)color atY:(CGFloat)y action:(SEL)action {
     CGFloat pw = self.panel.bounds.size.width;
     UIView *row = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
-    row.backgroundColor = C_CARD; row.layer.cornerRadius = 12;
+    row.backgroundColor = [UIColor colorWithRed:0.97 green:0.985 blue:1.0 alpha:1.0];
+    row.layer.cornerRadius = 12;
+    row.layer.borderWidth = 1.0;
+    row.layer.borderColor = [UIColor colorWithRed:0.0 green:0.48 blue:0.85 alpha:0.12].CGColor;
+    row.layer.shadowColor = [UIColor colorWithRed:0.0 green:0.35 blue:0.65 alpha:1.0].CGColor;
+    row.layer.shadowRadius = 4; row.layer.shadowOpacity = 0.08;
+    row.layer.shadowOffset = CGSizeMake(0,2);
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
     b.frame = CGRectMake(0,0,pw-24,44);
     [b setTitle:text forState:UIControlStateNormal];
@@ -1316,12 +1433,12 @@ static void h_addMoney(void* self, int amount) {
     for (NSNumber *v in self.speedBtns) {
         UIButton *b = self.speedBtns[v];
         BOOL on = (speedMode == v.intValue);
-        b.backgroundColor = on ? C_ON : [UIColor colorWithWhite:0.18 alpha:1];
-        [b setTitleColor:on ? [UIColor blackColor] : C_TEXT forState:UIControlStateNormal];
+        b.backgroundColor = on ? C_ON : [UIColor colorWithRed:0.88 green:0.93 blue:0.98 alpha:1.0];
+        [b setTitleColor:on ? [UIColor whiteColor] : C_TEXT forState:UIControlStateNormal];
         b.layer.shadowColor = C_ON.CGColor;
-        b.layer.shadowOffset = CGSizeMake(0,0);
+        b.layer.shadowOffset = CGSizeMake(0,2);
         b.layer.shadowRadius = on ? 6 : 0;
-        b.layer.shadowOpacity = on ? 0.5 : 0.0;
+        b.layer.shadowOpacity = on ? 0.45 : 0.0;
     }
     [self setToggle:@"nitro"     on:isInfiniteNitroEnabled];
     [self setToggle:@"fly"       on:isFlyEnabled];
@@ -1333,6 +1450,17 @@ static void h_addMoney(void* self, int amount) {
     [self setToggle:@"roomspam"  on:isRoomSpamEnabled];
     [self setToggle:@"roomcont"  on:roomSpamContinuous];
     [self setToggle:@"automoney" on:isAutoMoneyEnabled];
+    [self setToggle:@"esp"       on:isEspEnabled];
+
+    // canli durum rozeti
+    if (self.statusLabel && self.statusCard) {
+        if (global_base != 0 && g_il2cppReady) {
+            self.statusCard.backgroundColor = [UIColor colorWithRed:0.0 green:0.55 blue:0.85 alpha:0.10];
+            self.statusCard.layer.borderColor = [UIColor colorWithRed:0.0 green:0.55 blue:0.85 alpha:0.35].CGColor;
+            self.statusLabel.text = g_rb ? @"\U0001F7E2 il2cpp OK  •  Araba bagli" : @"\U0001F7E1 il2cpp OK  •  Arabaya bin";
+            self.statusLabel.textColor = C_ON;
+        }
+    }
 
     long m = -1;
     if (playerManagerGetInst && pm_getMoney) {
@@ -1352,9 +1480,10 @@ static void h_addMoney(void* self, int amount) {
 }
 
 - (void)frameTick {
-    enforceScale();   // her ekran frame'inde timeScale'i zorla
+    enforceScale();          // her ekran frame'inde timeScale'i zorla
+    few1n_applyCar();        // onbellekten nitro/hiz/panel uygula (arama YAPMAZ - ucuz)
     // Ucus (hover) ve dusuk yercekimi - Rigidbody dikey hizini ayarla
-    if ((isFlyEnabled || isLowGravEnabled) && g_rb) {
+    if ((isFlyEnabled || isLowGravEnabled) && ptrOk(g_rb)) {
         @try {
             Vec3 v = {0,0,0};
             rbGetVelIl(g_rb, &v);
@@ -1369,8 +1498,8 @@ static void h_addMoney(void* self, int amount) {
 }
 
 - (void)jumpTap {
-    FLog(g_rb ? @"ZIPLA basildi: rb VAR, uygulaniyor" : @"ZIPLA basildi: rb YOK! (once arabaya bin+sur)");
-    if (g_rb) {
+    FLog(ptrOk(g_rb) ? @"ZIPLA: rb VAR, uygulaniyor" : @"ZIPLA: rb YOK! (once arabaya bin+sur)");
+    if (ptrOk(g_rb)) {
         @try {
             Vec3 v = {0,0,0};
             rbGetVelIl(g_rb, &v);
@@ -1378,6 +1507,127 @@ static void h_addMoney(void* self, int amount) {
             rbSetVelIl(g_rb, &v);
         } @catch (NSException *e) { FLog([@"ZIPLA hata: " stringByAppendingString:e.reason ?: @"?"]); }
     }
+}
+
+// ===== YENI: HIZ PATLAMASI (anlik) - yatay hizi 2.5x it =====
+- (void)boostTap {
+    if (!ptrOk(g_rb)) { FLog(@"Boost: arabaya bin"); return; }
+    @try {
+        Vec3 v = {0,0,0};
+        rbGetVelIl(g_rb, &v);
+        float horiz = sqrtf(v.x*v.x + v.z*v.z);
+        if (horiz < 1.0f) { v.x = 0; v.z = 40.0f; }   // duruyorsa ileri firlat
+        else { v.x *= 2.5f; v.z *= 2.5f; }
+        rbSetVelIl(g_rb, &v);
+        FLog(@"Hiz patlamasi uygulandi");
+    } @catch (...) { FLog(@"Boost hatasi"); }
+}
+
+// ===== YENI: ARACI DONDUR - hizi sifirla (anlik dur) =====
+- (void)freezeTap {
+    if (!ptrOk(g_rb)) { FLog(@"Dondur: arabaya bin"); return; }
+    @try {
+        Vec3 z = {0,0,0};
+        rbSetVelIl(g_rb, &z);
+        FLog(@"Arac donduruldu (hiz=0)");
+    } @catch (...) { FLog(@"Dondur hatasi"); }
+}
+
+// ===== YENI: ESP - diger oyuncularin ekranda mesafesi/kutusu =====
+- (void)tapESP {
+    isEspEnabled = !isEspEnabled;
+    saveBool(@"esp", isEspEnabled);
+    if (isEspEnabled) {
+        if (!g_mWorldToScreen || !g_mFindObjectsPlural) {
+            FLog(@"ESP: Camera/bulucu hazir degil");
+            isEspEnabled = false; [self refreshUI]; return;
+        }
+        UIWindow *w = getKeyWindow();
+        if (w && !self.espOverlay) {
+            self.espOverlay = [[UIView alloc] initWithFrame:w.bounds];
+            self.espOverlay.userInteractionEnabled = NO;
+            self.espOverlay.backgroundColor = [UIColor clearColor];
+            [w addSubview:self.espOverlay];
+            self.espLabels = [NSMutableArray array];
+        }
+        if (self.espTimer) { [self.espTimer invalidate]; self.espTimer = nil; }
+        self.espTimer = [NSTimer scheduledTimerWithTimeInterval:0.12 target:self selector:@selector(updateESP) userInfo:nil repeats:YES];
+        FLog(@"ESP acildi");
+    } else {
+        if (self.espTimer) { [self.espTimer invalidate]; self.espTimer = nil; }
+        for (UILabel *l in self.espLabels) l.hidden = YES;
+        FLog(@"ESP kapandi");
+    }
+    [self refreshUI];
+}
+
+- (void)updateESP {
+    if (!isEspEnabled || !self.espOverlay) return;
+    @try {
+        UIWindow *w = getKeyWindow();
+        if (w) self.espOverlay.frame = w.bounds;
+        [w bringSubviewToFront:self.espOverlay];
+
+        void* cam = few1n_getCamera();
+        if (!ptrOk(cam)) { for (UILabel *l in self.espLabels) l.hidden = YES; return; }
+
+        int cnt = 0;
+        void* arr = few1n_findAllCars(&cnt);
+        if (!arr || cnt <= 0) { for (UILabel *l in self.espLabels) l.hidden = YES; return; }
+        void** cars = (void**)((uintptr_t)arr + 0x20);
+
+        CGFloat scale = [UIScreen mainScreen].scale;
+        CGFloat viewH = self.espOverlay.bounds.size.height;
+        CGFloat viewW = self.espOverlay.bounds.size.width;
+
+        // kendi konumum (mesafe icin)
+        Vec3 myPos = {0,0,0};
+        BOOL haveMe = NO;
+        if (ptrOk(g_rb)) { rbGetPosIl(g_rb, &myPos); haveMe = YES; }
+
+        int used = 0;
+        for (int i = 0; i < cnt; i++) {
+            void* car = cars[i];
+            if (!ptrOk(car)) continue;
+            void* rb = *(void**)((uintptr_t)car + 0x48);   // Rigidbody
+            if (!ptrOk(rb)) continue;
+            if (rb == g_rb) continue;                       // kendimi atla
+            Vec3 wp = {0,0,0};
+            rbGetPosIl(rb, &wp);
+            Vec3 sp = {0,0,0};
+            if (!few1n_worldToScreen(cam, wp, &sp)) continue;
+            if (sp.z <= 0.0f) continue;                     // kameranin arkasinda
+
+            CGFloat sx = sp.x / scale;
+            CGFloat sy = viewH - (sp.y / scale);            // Unity Y ters
+            if (sx < -40 || sx > viewW+40 || sy < -40 || sy > viewH+40) continue;
+
+            float dist = 0;
+            if (haveMe) { float dx=wp.x-myPos.x, dy=wp.y-myPos.y, dz=wp.z-myPos.z; dist = sqrtf(dx*dx+dy*dy+dz*dz); }
+
+            UILabel *lab;
+            if (used < (int)self.espLabels.count) lab = self.espLabels[used];
+            else {
+                lab = [[UILabel alloc] init];
+                lab.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
+                lab.textColor = [UIColor whiteColor];
+                lab.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:0.9 alpha:0.75];
+                lab.textAlignment = NSTextAlignmentCenter;
+                lab.layer.cornerRadius = 6; lab.clipsToBounds = YES;
+                [self.espOverlay addSubview:lab];
+                [self.espLabels addObject:lab];
+            }
+            lab.hidden = NO;
+            lab.text = [NSString stringWithFormat:@"\U0001F697 %.0fm", dist];
+            [lab sizeToFit];
+            CGRect fr = lab.frame; fr.size.width += 14; fr.size.height = 20;
+            lab.frame = fr;
+            lab.center = CGPointMake(sx, sy);
+            used++;
+        }
+        // kullanilmayan label'lari gizle
+        for (int i = used; i < (int)self.espLabels.count; i++) ((UILabel*)self.espLabels[i]).hidden = YES;
+    } @catch (...) {}
 }
 
 // ===== ISINLANMA (kendi araban - Rigidbody.position) =====
@@ -1423,20 +1673,14 @@ static void h_addMoney(void* self, int amount) {
 
 - (void)tick {
     enforceScale();
-    few1n_findCar();   // hooksuz araba arama + arac paneli uygulamasi
-    // her ~2 sn'de bir canli hiz teshisini loga yaz
+    few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
+    // ~6 sn'de bir tek satir teshis (log spam azaltildi)
     static int tc = 0;
-    if (++tc >= 7) {
+    if (++tc >= 20) {
         tc = 0;
-        float ts = g_il2cppReady ? getTimeScaleVal() : (ts_get ? ts_get() : -1.0f);
-        FLog([NSString stringWithFormat:@"[DIAG] ARAMA=%ld carDrive=%@ | bulucu=%@ tip=%@",
-              fFind, g_carDrive ? @"VAR" : @"YOK",
-              (g_mFindObjInactive || g_mFindObjectOfType || g_mFindAnyByType) ? @"VAR" : @"YOK",
-              g_carDriveTypeObj ? @"VAR" : @"YOK"]);
-        FLog([NSString stringWithFormat:@"[DIAG] nitro=%ld drive=%ld plate=%ld RCCP=%ld smRCC=%ld smPUN=%ld",
-              fNitro, fDrive, fPlate, fRccp, fSmRCC, fSmPUN]);
-        FLog([NSString stringWithFormat:@"[DIAG] rb=%@ rbMethod=%@ nitroDeg=%.2f il2cpp=%@",
-              g_rb ? @"VAR" : @"YOK", g_mRbSetVel ? @"VAR" : @"YOK", diagNitroVal, g_il2cppReady ? @"OK" : @"YOK"]);
+        FLog([NSString stringWithFormat:@"[DIAG] ARAMA=%ld carDrive=%@ rb=%@ tip=%@ il2cpp=%@",
+              fFind, g_carDrive ? @"VAR" : @"YOK", g_rb ? @"VAR" : @"YOK",
+              g_carDriveTypeObj ? @"VAR" : @"YOK", g_il2cppReady ? @"OK" : @"YOK"]);
     }
 }
 
@@ -2175,6 +2419,7 @@ static void restoreSettings(void) {
     speedMode              = loadInt(@"speedMode", 1);
     isInfiniteNitroEnabled = loadBool(@"nitro", false);
     isCarPanelEnabled      = loadBool(@"carpanel", false);
+    isEspEnabled           = false;   // ESP her aciliste kapali baslar (overlay guvenligi)
     carAccelPower          = loadFloat(@"caraccel", 3.0f);
     carSteerPower          = loadFloat(@"carsteer", 1.0f);
     carTopSpeed            = loadFloat(@"cartop",   300.0f);
@@ -2279,7 +2524,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v25.7 basladi, UnityFramework araniyor...");
+    FLog(@"v26.1 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
