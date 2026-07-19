@@ -1135,7 +1135,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v26.1  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v26.2  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1678,8 +1678,9 @@ static void h_addMoney(void* self, int amount) {
     static int tc = 0;
     if (++tc >= 20) {
         tc = 0;
-        FLog([NSString stringWithFormat:@"[DIAG] ARAMA=%ld carDrive=%@ rb=%@ tip=%@ il2cpp=%@",
-              fFind, g_carDrive ? @"VAR" : @"YOK", g_rb ? @"VAR" : @"YOK",
+        float ts = g_il2cppReady ? getTimeScaleVal() : -1.0f;
+        FLog([NSString stringWithFormat:@"[DIAG] ARAMA=%ld carDrive=%@ rb=%@ TS=%.2f tip=%@ il2cpp=%@",
+              fFind, g_carDrive ? @"VAR" : @"YOK", g_rb ? @"VAR" : @"YOK", ts,
               g_carDriveTypeObj ? @"VAR" : @"YOK", g_il2cppReady ? @"OK" : @"YOK"]);
     }
 }
@@ -2524,7 +2525,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v26.1 basladi, UnityFramework araniyor...");
+    FLog(@"v26.2 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
