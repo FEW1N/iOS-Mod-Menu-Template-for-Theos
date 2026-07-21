@@ -791,6 +791,20 @@ static void* few1n_findByType(void* typeObj) {
         @try { r = i_runtime_invoke(g_mFindAnyByType, NULL, a, NULL); } @catch (...) {}
         if (r) return r;
     }
+    // Yol 4 - FindObjectsOfType (cogul) -> ilk eleman (tekil bos donerse)
+    if (g_mFindObjectsPlural) {
+        void* a[1]; a[0] = typeObj;
+        @try {
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            if (ptrOk(arr)) {
+                int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+                if (cnt > 0 && cnt < 4096) {
+                    void** el = (void**)((uintptr_t)arr + 0x20);
+                    if (ptrOk(el[0])) return el[0];
+                }
+            }
+        } @catch (...) {}
+    }
     return NULL;
 }
 
@@ -949,17 +963,17 @@ static void few1n_findCar(void) {
 // HER FRAME UYGULAMA - onbellekteki pointerlari kullanir, arama YAPMAZ (ucuz).
 static void few1n_applyCar(void) {
     @try {
-        if (isInfiniteNitroEnabled && ptrOk(g_carNitro)) {
+        if (isInfiniteNitroEnabled && unityAlive(g_carNitro)) {
             *(float*)((uintptr_t)g_carNitro + 0x34) = 1.0f;   // nitro dolu tut
         }
         // NO-CLIP (hayalet) + ANTI-GRAV - sadece g_rb yeterli (carDrive gerekmez)
-        if (ptrOk(g_rb)) {
+        if (unityAlive(g_rb)) {
             if (isNoClip && g_mRbSetDetect) { bool f=false; void* a[1]={&f}; i_runtime_invoke(g_mRbSetDetect, g_rb, a, NULL); g_noClipApplied=true; }
             else if (g_noClipApplied && g_mRbSetDetect) { bool t=true; void* a[1]={&t}; i_runtime_invoke(g_mRbSetDetect, g_rb, a, NULL); g_noClipApplied=false; }
             if (isAntiGrav && g_mRbUseGrav) { bool f=false; void* a[1]={&f}; i_runtime_invoke(g_mRbUseGrav, g_rb, a, NULL); g_antiGravApplied=true; }
             else if (g_antiGravApplied && g_mRbUseGrav) { bool t=true; void* a[1]={&t}; i_runtime_invoke(g_mRbUseGrav, g_rb, a, NULL); g_antiGravApplied=false; }
         }
-        if (!ptrOk(g_carDrive)) return;
+        if (!unityAlive(g_carDrive)) return;   // araba oldu -> field yazma (crash korumasi)
         uintptr_t d = (uintptr_t)g_carDrive;
         diagDrive  = g_carDrive;
         diagCurSpd = *(float*)(d + 0x9C);
@@ -972,7 +986,7 @@ static void few1n_applyCar(void) {
         } else if (g_origTop > 0.0f && !isCarPanelEnabled) {
             *(float*)(d + 0x98) = g_origTop; g_origTop = 0.0f;
         }
-        if (ptrOk(g_rb) && speedMode > 1) {
+        if (unityAlive(g_rb) && speedMode > 1) {
             Vec3 v = {0,0,0};
             rbGetVelIl(g_rb, &v);
             float horiz = sqrtf(v.x*v.x + v.z*v.z);
@@ -1063,15 +1077,17 @@ static void few1n_refreshCarMats(void) {
     } @catch (...) {}
 }
 // Onbellekteki materyallere rengi uygula (her frame - ucuz)
+// KRITIK: araba yok edilince materyaller de gecersizlesir -> unityAlive kontrolu (crash korumasi)
 static void few1n_applyColor(void) {
     if (!isCarColorEnabled || !g_mMatSetColor || g_carMatCount == 0 || !i_runtime_invoke) return;
+    if (!unityAlive(g_carDrive)) { g_carMatCount = 0; return; }   // araba oldu -> materyaller cop, boyama
     @try {
         Color4 c;
         if (carColorRainbow) { g_carHue += 0.012f; if (g_carHue >= 1.0f) g_carHue -= 1.0f; c = hueToRGB(g_carHue); }
         else c = g_carColor;
         void* a[1]; a[0] = &c;
         for (int i = 0; i < g_carMatCount; i++)
-            if (ptrOk(g_carMats[i])) i_runtime_invoke(g_mMatSetColor, g_carMats[i], a, NULL);
+            if (unityAlive(g_carMats[i])) i_runtime_invoke(g_mMatSetColor, g_carMats[i], a, NULL);
     } @catch (...) {}
 }
 
@@ -1391,7 +1407,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v27.1  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v27.2  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1765,7 +1781,7 @@ static void h_addMoney(void* self, int amount) {
     few1n_applyCar();        // onbellekten nitro/hiz/panel uygula (arama YAPMAZ - ucuz)
     few1n_applyColor();      // arac rengini uygula (onbellek materyaller - ucuz)
     // Ucus (hover) ve dusuk yercekimi - Rigidbody dikey hizini ayarla
-    if ((isFlyEnabled || isLowGravEnabled || isNoClip) && ptrOk(g_rb)) {
+    if ((isFlyEnabled || isLowGravEnabled || isNoClip) && unityAlive(g_rb)) {
         @try {
             Vec3 v = {0,0,0};
             rbGetVelIl(g_rb, &v);
@@ -1780,8 +1796,8 @@ static void h_addMoney(void* self, int amount) {
 }
 
 - (void)jumpTap {
-    FLog(ptrOk(g_rb) ? @"ZIPLA: rb VAR, uygulaniyor" : @"ZIPLA: rb YOK (mod arabayi henuz bulamadi)");
-    if (ptrOk(g_rb)) {
+    FLog(unityAlive(g_rb) ? @"ZIPLA: rb VAR, uygulaniyor" : @"ZIPLA: rb YOK (mod arabayi henuz bulamadi)");
+    if (unityAlive(g_rb)) {
         @try {
             Vec3 v = {0,0,0};
             rbGetVelIl(g_rb, &v);
@@ -1793,7 +1809,7 @@ static void h_addMoney(void* self, int amount) {
 
 // ===== YENI: HIZ PATLAMASI (anlik) - yatay hizi 2.5x it =====
 - (void)boostTap {
-    if (!ptrOk(g_rb)) { FLog(@"Boost: araba araniyor (birkac saniye bekle)"); return; }
+    if (!unityAlive(g_rb)) { FLog(@"Boost: araba araniyor (birkac saniye bekle)"); return; }
     @try {
         Vec3 v = {0,0,0};
         rbGetVelIl(g_rb, &v);
@@ -1807,7 +1823,7 @@ static void h_addMoney(void* self, int amount) {
 
 // ===== YENI: ARACI DONDUR - hizi sifirla (anlik dur) =====
 - (void)freezeTap {
-    if (!ptrOk(g_rb)) { FLog(@"Dondur: araba araniyor (birkac saniye bekle)"); return; }
+    if (!unityAlive(g_rb)) { FLog(@"Dondur: araba araniyor (birkac saniye bekle)"); return; }
     @try {
         Vec3 z = {0,0,0};
         rbSetVelIl(g_rb, &z);
@@ -1869,12 +1885,12 @@ static void h_addMoney(void* self, int amount) {
                 CGFloat viewH = self.espOverlay.bounds.size.height;
                 CGFloat viewW = self.espOverlay.bounds.size.width;
                 Vec3 myPos = {0,0,0};
-                BOOL haveMe = ptrOk(g_rb); if (haveMe) rbGetPosIl(g_rb, &myPos);
+                BOOL haveMe = unityAlive(g_rb); if (haveMe) rbGetPosIl(g_rb, &myPos);
                 for (int i = 0; i < cnt && g_espCount < 128; i++) {
                     void* car = cars[i];
-                    if (!ptrOk(car)) continue;
+                    if (!unityAlive(car)) continue;
                     void* rb = *(void**)((uintptr_t)car + 0x48);
-                    if (!ptrOk(rb) || rb == g_rb) continue;
+                    if (!unityAlive(rb) || rb == g_rb) continue;
                     Vec3 wp = {0,0,0}; rbGetPosIl(rb, &wp);
                     Vec3 sp = {0,0,0};
                     if (!few1n_worldToScreen(cam, wp, &sp) || sp.z <= 0.0f) continue;
@@ -1901,7 +1917,7 @@ static void h_addMoney(void* self, int amount) {
 
 // ===== ISINLANMA (kendi araban - Rigidbody.position) =====
 - (void)saveTeleportPos {
-    if (g_rb) {
+    if (unityAlive(g_rb)) {
         @try {
             rbGetPosIl(g_rb, &g_savedPos);
             g_hasSavedPos = true;
@@ -1910,7 +1926,7 @@ static void h_addMoney(void* self, int amount) {
     }
 }
 - (void)teleportSaved {
-    if (g_rb && g_hasSavedPos) {
+    if (unityAlive(g_rb) && g_hasSavedPos) {
         @try {
             Vec3 p = g_savedPos;
             rbSetPosIl(g_rb, &p);
@@ -1919,7 +1935,7 @@ static void h_addMoney(void* self, int amount) {
     }
 }
 - (void)teleportForward {
-    if (g_rb) {
+    if (unityAlive(g_rb)) {
         @try {
             Vec3 p = {0,0,0};
             rbGetPosIl(g_rb, &p);
@@ -1930,7 +1946,7 @@ static void h_addMoney(void* self, int amount) {
     }
 }
 - (void)teleportUp {
-    if (g_rb) {
+    if (unityAlive(g_rb)) {
         @try {
             Vec3 p = {0,0,0};
             rbGetPosIl(g_rb, &p);
@@ -1944,8 +1960,8 @@ static void h_addMoney(void* self, int amount) {
     enforceScale();
     few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
     few1n_forcePlate(); // ozel plaka acikken il2cpp ile zorla (hook olu)
-    // arac rengi acikken materyalleri periyodik yenile (araba/parca degisebilir)
-    if (isCarColorEnabled && ptrOk(g_carDrive) && (g_carMatCount == 0 || (g_findTick % 20 == 0))) few1n_refreshCarMats();
+    // arac rengi acikken materyalleri BIR KEZ al (tekrar fetch instance sizdirir/coker)
+    if (isCarColorEnabled && unityAlive(g_carDrive) && g_carMatCount == 0) few1n_refreshCarMats();
     // OTOMATIK TIP ARAMA: araba tipi yoksa periyodik yeniden coz.
     // Araba assembly'si sadece yarisa girince yuklenir -> aciliste bulunamayabilir.
     static int retryTick = 0, retryCount = 0;
@@ -3087,7 +3103,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v27.1 basladi, UnityFramework araniyor...");
+    FLog(@"v27.2 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
