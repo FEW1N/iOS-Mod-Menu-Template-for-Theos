@@ -1412,7 +1412,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v27.3  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v27.4  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -2330,36 +2330,59 @@ static NSString* rainbowWrap(NSString* text, int idx) {
     [self doFetchLyrics:[NSString stringWithFormat:@"%@ - %@", artist ?: @"", title ?: @""]];
 }
 - (void)doFetchLyrics:(NSString*)q {
-    // "Sanatci - Sarki" ayir; ayrac yoksa hepsini baslik say
     NSString *artist = @"", *title = q;
     NSRange dash = [q rangeOfString:@" - "];
     if (dash.location != NSNotFound) { artist = [q substringToIndex:dash.location]; title = [q substringFromIndex:dash.location + 3]; }
-    NSCharacterSet *set = [NSCharacterSet URLPathAllowedCharacterSet];
-    NSString *ea = [[artist stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] stringByAddingPercentEncodingWithAllowedCharacters:set] ?: @"";
-    NSString *et = [[title stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] stringByAddingPercentEncodingWithAllowedCharacters:set] ?: @"";
-    NSString *urlStr = [NSString stringWithFormat:@"https://api.lyrics.ovh/v1/%@/%@", ea, et];
-    NSURL *url = [NSURL URLWithString:urlStr];
-    if (!url) { FLog(@"Gecersiz sarki adi"); return; }
-    FLog([NSString stringWithFormat:@"Sarki araniyor: %@ ...", q]);
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err){
+    artist = [artist stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    title  = [title stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    FLog([NSString stringWithFormat:@"Sarki sozu araniyor (LRCLIB): %@ ...", q]);
+    // Adim 1 - LRCLIB : genis kapsamli, bedava
+    NSString *lq = [[NSString stringWithFormat:@"%@ %@", artist, title] stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]] ?: @"";
+    NSURL *lrc = [NSURL URLWithString:[NSString stringWithFormat:@"https://lrclib.net/api/search?q=%@", lq]];
+    if (!lrc) { [self fetchOvhFallback:artist title:title]; return; }
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:lrc];
+    [req setValue:@"FEW1NMod/1.0 (iOS)" forHTTPHeaderField:@"User-Agent"];
+    NSString *ac = artist, *tc = title;
+    [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err){
         NSString *lyr = nil;
         if (data && !err) {
             @try {
-                NSDictionary *j = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-                if ([j isKindOfClass:[NSDictionary class]] && [j[@"lyrics"] isKindOfClass:[NSString class]]) lyr = j[@"lyrics"];
+                id arr = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                if ([arr isKindOfClass:[NSArray class]]) {
+                    for (NSDictionary *it in (NSArray*)arr) {
+                        if (![it isKindOfClass:[NSDictionary class]]) continue;
+                        NSString *pl = it[@"plainLyrics"];
+                        if ([pl isKindOfClass:[NSString class]] && pl.length > 0) { lyr = pl; break; }
+                    }
+                }
             } @catch (...) {}
         }
+        if (lyr.length) dispatch_async(dispatch_get_main_queue(), ^{ [self fillLyrics:lyr]; });
+        else [self fetchOvhFallback:ac title:tc];   // Adim 2 - LRCLIB bulamadi, lyrics.ovh yedek
+    }] resume];
+}
+- (void)fetchOvhFallback:(NSString*)artist title:(NSString*)title {
+    NSCharacterSet *set = [NSCharacterSet URLPathAllowedCharacterSet];
+    NSString *ea = [artist stringByAddingPercentEncodingWithAllowedCharacters:set] ?: @"";
+    NSString *et = [title stringByAddingPercentEncodingWithAllowedCharacters:set] ?: @"";
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://api.lyrics.ovh/v1/%@/%@", ea, et]];
+    if (!url) { dispatch_async(dispatch_get_main_queue(), ^{ FLog(@"Sarki sozu bulunamadi"); }); return; }
+    [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err){
+        NSString *lyr = nil;
+        if (data && !err) { @try { NSDictionary *j = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil]; if ([j isKindOfClass:[NSDictionary class]] && [j[@"lyrics"] isKindOfClass:[NSString class]]) lyr = j[@"lyrics"]; } @catch (...) {} }
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (!lyr || lyr.length == 0) { FLog(@"Sarki sozu bulunamadi (isim yanlis olabilir, 'Sanatci - Sarki' dene)"); return; }
-            NSArray *lines = [lyr componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-            g_lyrics = [NSMutableArray array];
-            for (NSString *l in lines) [g_lyrics addObject:[l stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
-            saveStr(@"lyricsText", [g_lyrics componentsJoinedByString:@"\n"]);
-            FLog([NSString stringWithFormat:@"✓ Sarki sozu getirildi: %lu satir. 'Baslat'a bas.", (unsigned long)g_lyrics.count]);
-            [self refreshUI];
+            if (lyr.length) [self fillLyrics:lyr];
+            else FLog(@"Sarki sozu hicbir kaynakta yok (baska sarki/yazim dene)");
         });
-    }];
-    [task resume];
+    }] resume];
+}
+- (void)fillLyrics:(NSString*)lyr {
+    NSArray *lines = [lyr componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    g_lyrics = [NSMutableArray array];
+    for (NSString *l in lines) [g_lyrics addObject:[l stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
+    saveStr(@"lyricsText", [g_lyrics componentsJoinedByString:@"\n"]);
+    FLog([NSString stringWithFormat:@"✓ Sarki sozu geldi: %lu satir. Artik 'Baslat'a basabilirsin.", (unsigned long)g_lyrics.count]);
+    [self refreshUI];
 }
 
 - (void)fireAscii {
@@ -3173,7 +3196,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v27.3 basladi, UnityFramework araniyor...");
+    FLog(@"v27.4 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
