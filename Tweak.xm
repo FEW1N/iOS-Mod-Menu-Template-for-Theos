@@ -6,6 +6,7 @@
 #include <string.h>
 #include <dlfcn.h>
 #include <math.h>
+#import <objc/runtime.h>
 
 // ============================================================
 //  v23.7 - FEW1N MOD MENU
@@ -934,8 +935,11 @@ static void few1n_findCar(void) {
     g_findTick++;
     @try {
         // Onbellek gecerliligi: yok edilen nesneyi temizle (crash korumasi)
-        if (g_carDrive && !unityAlive(g_carDrive)) { g_carDrive = NULL; g_rb = NULL; g_origTop = 0.0f; g_carMatCount = 0; }
+        if (g_carDrive && !unityAlive(g_carDrive)) { g_carDrive = NULL; g_origTop = 0.0f; g_carMatCount = 0; }
         if (g_carNitro && !unityAlive(g_carNitro))   g_carNitro = NULL;
+        // KRITIK: yedekten gelen g_rb, o obje olunce temizlenmiyordu -> stale pointer crash.
+        // Her tick g_rb'yi dogrula, oldayse temizle (yedek yol yeniden bulur).
+        if (g_rb && !unityAlive(g_rb)) g_rb = NULL;
 
         // Arama throttle: araba yokken her tick, varken ~4 sn'de bir (respawn/degisim yakala)
         if (((!g_carDrive) || (g_findTick % 12 == 0)) && g_carDriveTypeObj) {
@@ -1305,6 +1309,7 @@ static void h_addMoney(void* self, int amount) {
 @property (nonatomic, strong) NSTimer *espTimer;
 @property (nonatomic, strong) UIView *lyricsOverlay;
 @property (nonatomic, strong) UITextView *lyricsInput;
+@property (nonatomic, strong) UIView *songPicker;
 @property (nonatomic, strong) NSMutableDictionary *speedBtns;
 @property (nonatomic, strong) UIButton *plateBtn;
 @property (nonatomic, strong) UIButton *nameBtn;
@@ -1407,7 +1412,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v27.2  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v27.3  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -2102,7 +2107,15 @@ static NSString* rainbowWrap(NSString* text, int idx) {
 }
 - (void)tapLyrics {
     if (!isLyricsEnabled) {
-        if (!g_lyrics || g_lyrics.count == 0) { FLog(@"Once sarki sozu gir (kalem butonu)"); [self refreshUI]; return; }
+        if (!g_lyrics || g_lyrics.count == 0) {
+            UIAlertController *w = [UIAlertController alertControllerWithTitle:@"\U0001F3B5 Once sarki sozu gerek"
+                message:@"Sozu once getir:\n• 'Sarki Ara' ile internetten\n• ya da 'Elle Sarki Sozu Gir'" preferredStyle:UIAlertControllerStyleAlert];
+            [w addAction:[UIAlertAction actionWithTitle:@"\U0001F50D Sarki Ara" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ [self fetchLyricsByName]; }]];
+            [w addAction:[UIAlertAction actionWithTitle:@"Kapat" style:UIAlertActionStyleCancel handler:nil]];
+            [self present:w];
+            [self refreshUI]; return;
+        }
+        if (!chatGetInst || !chatSend) { FLog(@"Chat pointeri yok - odaya gir"); [self refreshUI]; return; }
         isLyricsEnabled = true;
         g_lyricsIdx = 0; g_colorIdx = 0;
         if (lyricsTimer) [lyricsTimer invalidate];
@@ -2231,9 +2244,14 @@ static NSString* rainbowWrap(NSString* text, int idx) {
                         NSString *title = song[@"title"];
                         NSString *artist = @"";
                         if ([song[@"artist"] isKindOfClass:[NSDictionary class]]) artist = song[@"artist"][@"name"];
+                        NSString *cover = @"";
+                        if ([song[@"album"] isKindOfClass:[NSDictionary class]]) {
+                            NSDictionary *alb = song[@"album"];
+                            cover = alb[@"cover_small"] ?: (alb[@"cover_medium"] ?: (alb[@"cover"] ?: @""));
+                        }
                         if ([title isKindOfClass:[NSString class]]) {
-                            [results addObject:@[artist ?: @"", title]];
-                            if (results.count >= 8) break;
+                            [results addObject:@[artist ?: @"", title, cover ?: @""]];
+                            if (results.count >= 10) break;
                         }
                     }
                 }
@@ -2241,21 +2259,73 @@ static NSString* rainbowWrap(NSString* text, int idx) {
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             if (results.count == 0) { FLog(@"Sonuc bulunamadi, baska ara"); return; }
-            UIAlertController *pick = [UIAlertController alertControllerWithTitle:@"\U0001F3B5 Sarki Sec"
-                                                                        message:[NSString stringWithFormat:@"%lu sonuc", (unsigned long)results.count] preferredStyle:UIAlertControllerStyleAlert];
-            for (NSArray *r in results) {
-                NSString *artist = r[0], *title = r[1];
-                NSString *label = artist.length ? [NSString stringWithFormat:@"%@ - %@", artist, title] : title;
-                [pick addAction:[UIAlertAction actionWithTitle:label style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-                    [self doFetchLyricsArtist:artist title:title];
-                }]];
-            }
-            [pick addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
-            [self present:pick];
+            [self showSongPicker:results];
         });
     }];
     [task resume];
 }
+// Album resimli sarki secim ekrani (kaydirilabilir, resimler async yuklenir)
+- (void)showSongPicker:(NSArray*)results {
+    UIWindow *w = getKeyWindow(); if (!w) return;
+    if (self.songPicker) { [self.songPicker removeFromSuperview]; self.songPicker = nil; }
+    CGFloat W = w.bounds.size.width, H = w.bounds.size.height;
+    CGFloat ow = MIN(460.0, W-20), oh = MIN(440.0, H-20);
+    UIView *ov = [[UIView alloc] initWithFrame:CGRectMake((W-ow)/2,(H-oh)/2,ow,oh)];
+    ov.backgroundColor = [UIColor colorWithRed:0.97 green:0.99 blue:1.0 alpha:0.99];
+    ov.layer.cornerRadius = 16; ov.layer.borderWidth = 1.5; ov.layer.borderColor = C_ACCENT.CGColor;
+    self.songPicker = ov;
+    UILabel *tl = [[UILabel alloc] initWithFrame:CGRectMake(14,10,ow-60,24)];
+    tl.text = @"\U0001F3B5 Sarki Sec"; tl.textColor = C_TEXT; tl.font = [UIFont boldSystemFontOfSize:15];
+    [ov addSubview:tl];
+    UIButton *x = [UIButton buttonWithType:UIButtonTypeSystem];
+    x.frame = CGRectMake(ow-42,8,32,32); [x setTitle:@"✕" forState:UIControlStateNormal];
+    [x setTitleColor:C_TEXT forState:UIControlStateNormal]; x.titleLabel.font = [UIFont systemFontOfSize:18];
+    [x addTarget:self action:@selector(closeSongPicker) forControlEvents:UIControlEventTouchUpInside];
+    [ov addSubview:x];
+    UIScrollView *sc = [[UIScrollView alloc] initWithFrame:CGRectMake(8,40,ow-16,oh-48)];
+    [ov addSubview:sc];
+    CGFloat yy = 0;
+    for (NSArray *r in results) {
+        NSString *artist = r[0], *title = r[1], *cover = r[2];
+        UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0,yy,ow-16,60)];
+        row.backgroundColor = [UIColor colorWithRed:0.93 green:0.96 blue:0.99 alpha:1.0];
+        row.layer.cornerRadius = 10;
+        UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(6,6,48,48)];
+        iv.backgroundColor = [UIColor colorWithWhite:0.85 alpha:1]; iv.layer.cornerRadius = 6; iv.clipsToBounds = YES;
+        iv.contentMode = UIViewContentModeScaleAspectFill;
+        [row addSubview:iv];
+        if (cover.length) {
+            NSURL *cu = [NSURL URLWithString:cover];
+            if (cu) { [[[NSURLSession sharedSession] dataTaskWithURL:cu completionHandler:^(NSData *d, NSURLResponse *rp, NSError *e){
+                if (d) { UIImage *im = [UIImage imageWithData:d]; if (im) dispatch_async(dispatch_get_main_queue(), ^{ iv.image = im; }); }
+            }] resume]; }
+        }
+        UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(62,8,ow-16-70,44)];
+        lb.numberOfLines = 2;
+        NSMutableAttributedString *s = [[NSMutableAttributedString alloc] initWithString:[NSString stringWithFormat:@"%@\n%@", title, artist]];
+        [s addAttributes:@{NSFontAttributeName:[UIFont boldSystemFontOfSize:13], NSForegroundColorAttributeName:C_TEXT} range:NSMakeRange(0, title.length)];
+        [s addAttributes:@{NSFontAttributeName:[UIFont systemFontOfSize:11], NSForegroundColorAttributeName:C_SUB} range:NSMakeRange(title.length, s.length-title.length)];
+        lb.attributedText = s;
+        [row addSubview:lb];
+        UIButton *tap = [UIButton buttonWithType:UIButtonTypeCustom];
+        tap.frame = row.bounds;
+        objc_setAssociatedObject(tap, "sartist", artist, OBJC_ASSOCIATION_RETAIN);
+        objc_setAssociatedObject(tap, "stitle", title, OBJC_ASSOCIATION_RETAIN);
+        [tap addTarget:self action:@selector(songPicked:) forControlEvents:UIControlEventTouchUpInside];
+        [row addSubview:tap];
+        [sc addSubview:row];
+        yy += 66;
+    }
+    sc.contentSize = CGSizeMake(ow-16, yy);
+    [w addSubview:ov];
+}
+- (void)songPicked:(UIButton*)b {
+    NSString *artist = objc_getAssociatedObject(b, "sartist");
+    NSString *title = objc_getAssociatedObject(b, "stitle");
+    [self closeSongPicker];
+    [self doFetchLyricsArtist:artist title:title];
+}
+- (void)closeSongPicker { if (self.songPicker) { [self.songPicker removeFromSuperview]; self.songPicker = nil; } }
 - (void)doFetchLyricsArtist:(NSString*)artist title:(NSString*)title {
     [self doFetchLyrics:[NSString stringWithFormat:@"%@ - %@", artist ?: @"", title ?: @""]];
 }
@@ -3103,7 +3173,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v27.2 basladi, UnityFramework araniyor...");
+    FLog(@"v27.3 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
