@@ -216,6 +216,26 @@ static void* g_plateTypeObj = NULL;    // typeof(PlateVariant)
 static void* g_rbTypeObj = NULL;       // typeof(UnityEngine.Rigidbody)
 static void* g_mCompGetTransform = NULL; // Component.get_transform
 static void* g_mTransGetPos = NULL;    // Transform.get_position -> Vector3
+// ==== YENI HAVALI HACKLER ====
+static void* g_mRbSetDetect = NULL;    // Rigidbody.set_detectCollisions (no-clip)
+static void* g_mRbUseGrav = NULL;      // Rigidbody.set_useGravity (anti-grav)
+// ==== ARAC RENGI (Renderer.material.color) ====
+typedef struct { float r, g, b, a; } Color4;
+static void* g_rendererType = NULL;    // typeof(UnityEngine.Renderer)
+static void* g_mGetCompsChild = NULL;  // Component.GetComponentsInChildren(Type,bool)
+static void* g_mRendGetMat = NULL;     // Renderer.get_material
+static void* g_mMatSetColor = NULL;    // Material.set_color(Color)
+static bool  isCarColorEnabled = false;
+static bool  carColorRainbow = true;   // true=RGB dongu, false=sabit renk
+static float g_carHue = 0.0f;
+static Color4 g_carColor = {1.0f, 0.0f, 0.0f, 1.0f};   // sabit renk (kirmizi)
+static void* g_carMats[96]; static int g_carMatCount = 0;  // materyal onbellegi
+static bool  isNoClip = false;         // hayalet mod (duvardan gec)
+static bool  isAntiGrav = false;       // yercekimi kapali (ay modu)
+static bool  isSpeedHud = false;       // hiz gostergesi HUD
+static bool  g_noClipApplied = false;  // durum takibi (surekli set etmemek icin)
+static bool  g_antiGravApplied = false;
+static float g_hudSpeed = 0, g_hudRPM = 0; static int g_hudGear = 0;
 // ==== ARAC DEGISTIRME (hooksuz, il2cpp singleton uzerinden) ====
 // HR_MainMenuHandler: static field 'iiz' = singleton
 // metodlar: SelectCar / PositiveCarIndex / NegativeCarIndex / BuyCar
@@ -367,13 +387,26 @@ static void few1n_initIl2cpp(void) {
                 }
                 g_mRbGetPos = i_class_get_method_from_name(rbClass, "get_position", 0);
                 g_mRbSetPos = i_class_get_method_from_name(rbClass, "set_position", 1);
+                g_mRbSetDetect = i_class_get_method_from_name(rbClass, "set_detectCollisions", 1);  // no-clip
+                g_mRbUseGrav   = i_class_get_method_from_name(rbClass, "set_useGravity", 1);        // anti-grav
                 g_rbTypeObj = few1n_typeObjOf(rbClass);   // FindObjectsOfType(Rigidbody) yedek yolu icin
                 FLog([NSString stringWithFormat:@"Rigidbody bulundu! get=%p set=%p tip=%p", g_mRbGetVel, g_mRbSetVel, g_rbTypeObj]);
             }
         }
         if (!g_mCompGetTransform) {
             void* cmp = i_class_from_name(img, "UnityEngine", "Component");
-            if (cmp) g_mCompGetTransform = i_class_get_method_from_name(cmp, "get_transform", 0);
+            if (cmp) {
+                g_mCompGetTransform = i_class_get_method_from_name(cmp, "get_transform", 0);
+                g_mGetCompsChild    = i_class_get_method_from_name(cmp, "GetComponentsInChildren", 2); // (Type,bool)
+            }
+        }
+        if (!g_rendererType) {
+            void* rc = i_class_from_name(img, "UnityEngine", "Renderer");
+            if (rc) { g_rendererType = few1n_typeObjOf(rc); g_mRendGetMat = i_class_get_method_from_name(rc, "get_material", 0); }
+        }
+        if (!g_mMatSetColor) {
+            void* mc = i_class_from_name(img, "UnityEngine", "Material");
+            if (mc) g_mMatSetColor = i_class_get_method_from_name(mc, "set_color", 1);
         }
         if (!g_mTransGetPos) {
             void* tr = i_class_from_name(img, "UnityEngine", "Transform");
@@ -792,6 +825,55 @@ static void* few1n_findAllCars(int* outCount) {
     } @catch (...) { return NULL; }
 }
 
+// ===== ESP CIZIM VERISI + OZEL VIEW (kutu + cizgi + HUD) =====
+typedef struct { float sx, sy, dist, boxH; } EspItem;
+static EspItem g_espItems[128];
+static int g_espCount = 0;
+
+@interface FEW1NDrawView : UIView @end
+@implementation FEW1NDrawView
+- (void)drawRect:(CGRect)rect {
+    CGContextRef ctx = UIGraphicsGetCurrentContext(); if (!ctx) return;
+    CGFloat W = rect.size.width, H = rect.size.height;
+    if (isEspEnabled) {
+        for (int i = 0; i < g_espCount; i++) {
+            EspItem e = g_espItems[i];
+            CGFloat bh = e.boxH, bw = e.boxH * 0.82;
+            CGRect box = CGRectMake(e.sx - bw/2, e.sy - bh/2, bw, bh);
+            // snapline: ekran alt-ortasindan kutunun altina
+            CGContextSetStrokeColorWithColor(ctx, [UIColor colorWithRed:0 green:0.62 blue:1 alpha:0.32].CGColor);
+            CGContextSetLineWidth(ctx, 1.0);
+            CGContextMoveToPoint(ctx, W/2, H);
+            CGContextAddLineToPoint(ctx, e.sx, CGRectGetMaxY(box));
+            CGContextStrokePath(ctx);
+            // kutu (kose vurgulu)
+            CGContextSetStrokeColorWithColor(ctx, [UIColor colorWithRed:0 green:0.85 blue:1 alpha:0.95].CGColor);
+            CGContextSetLineWidth(ctx, 1.6);
+            CGContextStrokeRect(ctx, box);
+            // mesafe etiketi (kutu ustu)
+            NSString *txt = [NSString stringWithFormat:@"%.0fm", e.dist];
+            NSDictionary *at = @{NSFontAttributeName:[UIFont boldSystemFontOfSize:11], NSForegroundColorAttributeName:[UIColor whiteColor]};
+            CGSize ts = [txt sizeWithAttributes:at];
+            CGRect lb = CGRectMake(e.sx - ts.width/2 - 3, CGRectGetMinY(box) - ts.height - 3, ts.width + 6, ts.height + 2);
+            CGContextSetFillColorWithColor(ctx, [UIColor colorWithRed:0 green:0.5 blue:0.9 alpha:0.82].CGColor);
+            CGContextFillRect(ctx, lb);
+            [txt drawAtPoint:CGPointMake(lb.origin.x + 3, lb.origin.y + 1) withAttributes:at];
+        }
+    }
+    if (isSpeedHud) {
+        NSString *s = [NSString stringWithFormat:@"%.0f", g_hudSpeed];
+        NSDictionary *big = @{NSFontAttributeName:[UIFont boldSystemFontOfSize:32], NSForegroundColorAttributeName:[UIColor whiteColor]};
+        NSDictionary *sm  = @{NSFontAttributeName:[UIFont boldSystemFontOfSize:11], NSForegroundColorAttributeName:[UIColor colorWithWhite:0.9 alpha:1]};
+        CGRect hud = CGRectMake(24, H - 116, 138, 64);
+        UIBezierPath *rp = [UIBezierPath bezierPathWithRoundedRect:hud cornerRadius:13];
+        CGContextSetFillColorWithColor(ctx, [UIColor colorWithRed:0 green:0.45 blue:0.85 alpha:0.72].CGColor);
+        CGContextAddPath(ctx, rp.CGPath); CGContextFillPath(ctx);
+        [s   drawAtPoint:CGPointMake(hud.origin.x + 14, hud.origin.y + 8)  withAttributes:big];
+        [@"km/s hiz" drawAtPoint:CGPointMake(hud.origin.x + 16, hud.origin.y + 46) withAttributes:sm];
+    }
+}
+@end
+
 // Bir Component'in dunya konumu (transform.position)
 static bool few1n_objPos(void* obj, Vec3* out) {
     *out = (Vec3){0,0,0};
@@ -838,7 +920,7 @@ static void few1n_findCar(void) {
     g_findTick++;
     @try {
         // Onbellek gecerliligi: yok edilen nesneyi temizle (crash korumasi)
-        if (g_carDrive && !unityAlive(g_carDrive)) { g_carDrive = NULL; g_rb = NULL; g_origTop = 0.0f; }
+        if (g_carDrive && !unityAlive(g_carDrive)) { g_carDrive = NULL; g_rb = NULL; g_origTop = 0.0f; g_carMatCount = 0; }
         if (g_carNitro && !unityAlive(g_carNitro))   g_carNitro = NULL;
 
         // Arama throttle: araba yokken her tick, varken ~4 sn'de bir (respawn/degisim yakala)
@@ -870,10 +952,18 @@ static void few1n_applyCar(void) {
         if (isInfiniteNitroEnabled && ptrOk(g_carNitro)) {
             *(float*)((uintptr_t)g_carNitro + 0x34) = 1.0f;   // nitro dolu tut
         }
+        // NO-CLIP (hayalet) + ANTI-GRAV - sadece g_rb yeterli (carDrive gerekmez)
+        if (ptrOk(g_rb)) {
+            if (isNoClip && g_mRbSetDetect) { bool f=false; void* a[1]={&f}; i_runtime_invoke(g_mRbSetDetect, g_rb, a, NULL); g_noClipApplied=true; }
+            else if (g_noClipApplied && g_mRbSetDetect) { bool t=true; void* a[1]={&t}; i_runtime_invoke(g_mRbSetDetect, g_rb, a, NULL); g_noClipApplied=false; }
+            if (isAntiGrav && g_mRbUseGrav) { bool f=false; void* a[1]={&f}; i_runtime_invoke(g_mRbUseGrav, g_rb, a, NULL); g_antiGravApplied=true; }
+            else if (g_antiGravApplied && g_mRbUseGrav) { bool t=true; void* a[1]={&t}; i_runtime_invoke(g_mRbUseGrav, g_rb, a, NULL); g_antiGravApplied=false; }
+        }
         if (!ptrOk(g_carDrive)) return;
         uintptr_t d = (uintptr_t)g_carDrive;
         diagDrive  = g_carDrive;
         diagCurSpd = *(float*)(d + 0x9C);
+        g_hudSpeed = fabsf(diagCurSpd);   // HUD icin hiz
         diagTopSpd = *(float*)(d + 0x98);
         if (speedMode > 1) {
             if (g_origTop <= 0.0f && diagTopSpd > 0.0f && diagTopSpd < 1000.0f) g_origTop = diagTopSpd;
@@ -937,6 +1027,51 @@ static void few1n_forcePlate(void) {
                 i_runtime_invoke(g_mTmpSetText, t, pa, NULL);
             }
         }
+    } @catch (...) {}
+}
+
+// ===== ARAC RENGI (Renderer.material.color, il2cpp) =====
+static Color4 hueToRGB(float h) {   // h 0..1 arasi -> gokkusagi
+    float f = h*6.0f - floorf(h*6.0f), q = 1.0f - f;
+    int ii = ((int)floorf(h*6.0f)) % 6; if (ii < 0) ii += 6;
+    switch (ii) {
+        case 0: return (Color4){1,f,0,1};
+        case 1: return (Color4){q,1,0,1};
+        case 2: return (Color4){0,1,f,1};
+        case 3: return (Color4){0,q,1,1};
+        case 4: return (Color4){f,0,1,1};
+        default:return (Color4){1,0,q,1};
+    }
+}
+// Arabanin tum Renderer materyallerini onbellege al
+static void few1n_refreshCarMats(void) {
+    g_carMatCount = 0;
+    if (!ptrOk(g_carDrive) || !g_mGetCompsChild || !g_rendererType || !g_mRendGetMat || !i_runtime_invoke) return;
+    @try {
+        bool inc = true;
+        void* a[2]; a[0] = g_rendererType; a[1] = &inc;
+        void* arr = i_runtime_invoke(g_mGetCompsChild, g_carDrive, a, NULL);
+        if (!ptrOk(arr)) return;
+        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+        if (cnt < 0 || cnt > 96) return;
+        void** rends = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt && g_carMatCount < 96; i++) {
+            void* rend = rends[i]; if (!ptrOk(rend)) continue;
+            void* mat = i_runtime_invoke(g_mRendGetMat, rend, NULL, NULL);
+            if (ptrOk(mat)) g_carMats[g_carMatCount++] = mat;
+        }
+    } @catch (...) {}
+}
+// Onbellekteki materyallere rengi uygula (her frame - ucuz)
+static void few1n_applyColor(void) {
+    if (!isCarColorEnabled || !g_mMatSetColor || g_carMatCount == 0 || !i_runtime_invoke) return;
+    @try {
+        Color4 c;
+        if (carColorRainbow) { g_carHue += 0.012f; if (g_carHue >= 1.0f) g_carHue -= 1.0f; c = hueToRGB(g_carHue); }
+        else c = g_carColor;
+        void* a[1]; a[0] = &c;
+        for (int i = 0; i < g_carMatCount; i++)
+            if (ptrOk(g_carMats[i])) i_runtime_invoke(g_mMatSetColor, g_carMats[i], a, NULL);
     } @catch (...) {}
 }
 
@@ -1256,7 +1391,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v26.8  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v27.1  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1315,6 +1450,11 @@ static void h_addMoney(void* self, int amount) {
     y = [self toggle:@"\U0001F4A8  Sonsuz Nitro" sub:@"Nitro hic bitmez" key:@"nitro" atY:y action:@selector(tapNitro)];
     y = [self toggle:@"\U0001F681  Ucus (Hover)"  sub:@"Havada asili kal, surerek uc" key:@"fly" atY:y action:@selector(tapFly)];
     y = [self toggle:@"\U0001FAB6  Dusuk Yercekimi" sub:@"Dusus yavas, floaty" key:@"lowgrav" atY:y action:@selector(tapLowGrav)];
+    y = [self toggle:@"\U0001F47B  No-Clip (Hayalet)" sub:@"Duvardan/araclardan gec (ucus ac!)" key:@"noclip" atY:y action:@selector(tapNoClip)];
+    y = [self toggle:@"\U0001F319  Anti-Gravity (Ay modu)" sub:@"Yercekimi kapali, suzul" key:@"antigrav" atY:y action:@selector(tapAntiGrav)];
+    y = [self toggle:@"\U0001F308  Arac Rengi (Disko/RGB)" sub:@"Araci renklendir (kendi ekranin)" key:@"carcolor" atY:y action:@selector(tapCarColor)];
+    y = [self toggle:@"\U0001F504  RGB Dongu / Sabit Renk" sub:@"Acik=gokkusagi, Kapali=sabit" key:@"carcolorrainbow" atY:y action:@selector(tapCarColorRainbow)];
+    y = [self actionRow:@"\U0001F3A8  Sabit Renk Sec" color:C_CYAN atY:y action:@selector(pickCarColor)];
     y = [self actionRow:@"\U0001F53C  ZIPLA (bas)" color:C_ON atY:y action:@selector(jumpTap)];
     y = [self actionRow:@"\U0001F680  Hiz Patlamasi (boost)" color:C_ON atY:y action:@selector(boostTap)];
     y = [self actionRow:@"\U0001F9CA  Araci Dondur (anlik dur)" color:C_CYAN atY:y action:@selector(freezeTap)];
@@ -1322,7 +1462,8 @@ static void h_addMoney(void* self, int amount) {
     y = [self actionRow:@"➡️  Ileri Isinlan (+50)" color:C_CYAN atY:y action:@selector(teleportForward)];
     y = [self actionRow:@"\U0001F4CD  Konum Kaydet" color:C_GOLD atY:y action:@selector(saveTeleportPos)];
     y = [self actionRow:@"\U0001F680  Kayitli Konuma Isinlan" color:C_GOLD atY:y action:@selector(teleportSaved)];
-    y = [self toggle:@"\U0001F441  ESP (oyuncu mesafesi)" sub:@"Diger araclar ekranda mesafeyle" key:@"esp" atY:y action:@selector(tapESP)];
+    y = [self toggle:@"\U0001F441  ESP Wallhack (kutu+cizgi)" sub:@"Diger araclar: kutu, mesafe, snapline" key:@"esp" atY:y action:@selector(tapESP)];
+    y = [self toggle:@"\U0001F3CE  Hiz Gostergesi HUD" sub:@"Ekranda anlik hizin" key:@"speedhud" atY:y action:@selector(tapSpeedHud)];
 
     y = [self header:@"\U0001F4AC  CHAT" atY:y];
     y = [self toggle:@"\U0001F3A8  Renkli Chat" sub:@"[FEW1N] prefix + cyan" key:@"colorchat" atY:y action:@selector(tapColorChat)];
@@ -1583,6 +1724,11 @@ static void h_addMoney(void* self, int amount) {
     [self setToggle:@"automoney" on:isAutoMoneyEnabled];
     [self setToggle:@"esp"       on:isEspEnabled];
     [self setToggle:@"asciicolor" on:asciiColorCycle];
+    [self setToggle:@"noclip"    on:isNoClip];
+    [self setToggle:@"antigrav"  on:isAntiGrav];
+    [self setToggle:@"speedhud"  on:isSpeedHud];
+    [self setToggle:@"carcolor"  on:isCarColorEnabled];
+    [self setToggle:@"carcolorrainbow" on:carColorRainbow];
     [self setToggle:@"lyrics"    on:isLyricsEnabled];
     [self setToggle:@"lyricsColor" on:lyricsColorCycle];
     [self setToggle:@"lyricsLoop" on:lyricsLoop];
@@ -1617,13 +1763,14 @@ static void h_addMoney(void* self, int amount) {
 - (void)frameTick {
     enforceScale();          // her ekran frame'inde timeScale'i zorla
     few1n_applyCar();        // onbellekten nitro/hiz/panel uygula (arama YAPMAZ - ucuz)
+    few1n_applyColor();      // arac rengini uygula (onbellek materyaller - ucuz)
     // Ucus (hover) ve dusuk yercekimi - Rigidbody dikey hizini ayarla
-    if ((isFlyEnabled || isLowGravEnabled) && ptrOk(g_rb)) {
+    if ((isFlyEnabled || isLowGravEnabled || isNoClip) && ptrOk(g_rb)) {
         @try {
             Vec3 v = {0,0,0};
             rbGetVelIl(g_rb, &v);
-            if (isFlyEnabled) {
-                v.y = 0.0f;                       // havada asili kal (dusme yok)
+            if (isFlyEnabled || isNoClip) {
+                v.y = 0.0f;                       // havada asili kal - no-clip'te de dusme yok
             } else if (isLowGravEnabled && v.y < 0.0f) {
                 v.y *= 0.25f;                     // dususu yavaslat (floaty)
             }
@@ -1672,96 +1819,83 @@ static void h_addMoney(void* self, int amount) {
 - (void)tapESP {
     isEspEnabled = !isEspEnabled;
     saveBool(@"esp", isEspEnabled);
-    if (isEspEnabled) {
-        if (!g_mWorldToScreen || !g_mFindObjectsPlural) {
-            FLog(@"ESP: Camera/bulucu hazir degil");
-            isEspEnabled = false; [self refreshUI]; return;
-        }
+    if (isEspEnabled && (!g_mWorldToScreen || !g_mFindObjectsPlural)) { FLog(@"ESP: Camera/bulucu hazir degil"); isEspEnabled = false; }
+    [self syncDrawOverlay];
+    [self refreshUI];
+}
+- (void)tapSpeedHud {
+    isSpeedHud = !isSpeedHud;
+    saveBool(@"speedhud", isSpeedHud);
+    [self syncDrawOverlay];
+    [self refreshUI];
+}
+// ESP veya HUD acikken cizim overlay'i + timer'i yonet
+- (void)syncDrawOverlay {
+    BOOL need = isEspEnabled || isSpeedHud;
+    if (need) {
         UIWindow *w = getKeyWindow();
         if (w && !self.espOverlay) {
-            self.espOverlay = [[UIView alloc] initWithFrame:w.bounds];
-            self.espOverlay.userInteractionEnabled = NO;
-            self.espOverlay.backgroundColor = [UIColor clearColor];
-            [w addSubview:self.espOverlay];
-            self.espLabels = [NSMutableArray array];
+            FEW1NDrawView *dv = [[FEW1NDrawView alloc] initWithFrame:w.bounds];
+            dv.userInteractionEnabled = NO;
+            dv.backgroundColor = [UIColor clearColor];
+            dv.opaque = NO;
+            [w addSubview:dv];
+            self.espOverlay = dv;
         }
-        if (self.espTimer) { [self.espTimer invalidate]; self.espTimer = nil; }
-        self.espTimer = [NSTimer scheduledTimerWithTimeInterval:0.12 target:self selector:@selector(updateESP) userInfo:nil repeats:YES];
-        FLog(@"ESP acildi");
+        if (!self.espTimer) self.espTimer = [NSTimer scheduledTimerWithTimeInterval:0.10 target:self selector:@selector(updateESP) userInfo:nil repeats:YES];
+        FLog(@"Overlay acildi (ESP/HUD)");
     } else {
         if (self.espTimer) { [self.espTimer invalidate]; self.espTimer = nil; }
-        for (UILabel *l in self.espLabels) l.hidden = YES;
-        FLog(@"ESP kapandi");
+        if (self.espOverlay) { [self.espOverlay removeFromSuperview]; self.espOverlay = nil; }
+        g_espCount = 0;
     }
-    [self refreshUI];
 }
 
 - (void)updateESP {
-    if (!isEspEnabled || !self.espOverlay) return;
+    if (!self.espOverlay) return;
     @try {
         UIWindow *w = getKeyWindow();
         if (w) self.espOverlay.frame = w.bounds;
         [w bringSubviewToFront:self.espOverlay];
 
-        void* cam = few1n_getCamera();
-        if (!ptrOk(cam)) { for (UILabel *l in self.espLabels) l.hidden = YES; return; }
-
-        int cnt = 0;
-        void* arr = few1n_findAllCars(&cnt);
-        if (!arr || cnt <= 0) { for (UILabel *l in self.espLabels) l.hidden = YES; return; }
-        void** cars = (void**)((uintptr_t)arr + 0x20);
-
-        CGFloat scale = [UIScreen mainScreen].scale;
-        CGFloat viewH = self.espOverlay.bounds.size.height;
-        CGFloat viewW = self.espOverlay.bounds.size.width;
-
-        // kendi konumum (mesafe icin)
-        Vec3 myPos = {0,0,0};
-        BOOL haveMe = NO;
-        if (ptrOk(g_rb)) { rbGetPosIl(g_rb, &myPos); haveMe = YES; }
-
-        int used = 0;
-        for (int i = 0; i < cnt; i++) {
-            void* car = cars[i];
-            if (!ptrOk(car)) continue;
-            void* rb = *(void**)((uintptr_t)car + 0x48);   // Rigidbody
-            if (!ptrOk(rb)) continue;
-            if (rb == g_rb) continue;                       // kendimi atla
-            Vec3 wp = {0,0,0};
-            rbGetPosIl(rb, &wp);
-            Vec3 sp = {0,0,0};
-            if (!few1n_worldToScreen(cam, wp, &sp)) continue;
-            if (sp.z <= 0.0f) continue;                     // kameranin arkasinda
-
-            CGFloat sx = sp.x / scale;
-            CGFloat sy = viewH - (sp.y / scale);            // Unity Y ters
-            if (sx < -40 || sx > viewW+40 || sy < -40 || sy > viewH+40) continue;
-
-            float dist = 0;
-            if (haveMe) { float dx=wp.x-myPos.x, dy=wp.y-myPos.y, dz=wp.z-myPos.z; dist = sqrtf(dx*dx+dy*dy+dz*dz); }
-
-            UILabel *lab;
-            if (used < (int)self.espLabels.count) lab = self.espLabels[used];
-            else {
-                lab = [[UILabel alloc] init];
-                lab.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
-                lab.textColor = [UIColor whiteColor];
-                lab.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:0.9 alpha:0.75];
-                lab.textAlignment = NSTextAlignmentCenter;
-                lab.layer.cornerRadius = 6; lab.clipsToBounds = YES;
-                [self.espOverlay addSubview:lab];
-                [self.espLabels addObject:lab];
+        g_espCount = 0;
+        if (isEspEnabled) {
+            void* cam = few1n_getCamera();
+            int cnt = 0;
+            void* arr = ptrOk(cam) ? few1n_findAllCars(&cnt) : NULL;
+            if (arr && cnt > 0) {
+                void** cars = (void**)((uintptr_t)arr + 0x20);
+                CGFloat scale = [UIScreen mainScreen].scale;
+                CGFloat viewH = self.espOverlay.bounds.size.height;
+                CGFloat viewW = self.espOverlay.bounds.size.width;
+                Vec3 myPos = {0,0,0};
+                BOOL haveMe = ptrOk(g_rb); if (haveMe) rbGetPosIl(g_rb, &myPos);
+                for (int i = 0; i < cnt && g_espCount < 128; i++) {
+                    void* car = cars[i];
+                    if (!ptrOk(car)) continue;
+                    void* rb = *(void**)((uintptr_t)car + 0x48);
+                    if (!ptrOk(rb) || rb == g_rb) continue;
+                    Vec3 wp = {0,0,0}; rbGetPosIl(rb, &wp);
+                    Vec3 sp = {0,0,0};
+                    if (!few1n_worldToScreen(cam, wp, &sp) || sp.z <= 0.0f) continue;
+                    CGFloat sx = sp.x / scale;
+                    CGFloat sy = viewH - (sp.y / scale);
+                    if (sx < -60 || sx > viewW+60 || sy < -60 || sy > viewH+60) continue;
+                    // kutu yuksekligi: aracin ustunu de projekte et (2.2m yukari)
+                    Vec3 wpTop = { wp.x, wp.y + 2.2f, wp.z };
+                    Vec3 spTop = {0,0,0};
+                    CGFloat boxH = 40;
+                    if (few1n_worldToScreen(cam, wpTop, &spTop) && spTop.z > 0) {
+                        CGFloat syTop = viewH - (spTop.y / scale);
+                        boxH = fabs(sy - syTop); if (boxH < 14) boxH = 14; if (boxH > 220) boxH = 220;
+                    }
+                    float dist = 0;
+                    if (haveMe) { float dx=wp.x-myPos.x, dy=wp.y-myPos.y, dz=wp.z-myPos.z; dist = sqrtf(dx*dx+dy*dy+dz*dz); }
+                    g_espItems[g_espCount++] = (EspItem){ (float)sx, (float)sy, dist, (float)boxH };
+                }
             }
-            lab.hidden = NO;
-            lab.text = [NSString stringWithFormat:@"\U0001F697 %.0fm", dist];
-            [lab sizeToFit];
-            CGRect fr = lab.frame; fr.size.width += 14; fr.size.height = 20;
-            lab.frame = fr;
-            lab.center = CGPointMake(sx, sy);
-            used++;
         }
-        // kullanilmayan label'lari gizle
-        for (int i = used; i < (int)self.espLabels.count; i++) ((UILabel*)self.espLabels[i]).hidden = YES;
+        [self.espOverlay setNeedsDisplay];   // kutu/cizgi/HUD yeniden ciz
     } @catch (...) {}
 }
 
@@ -1810,6 +1944,8 @@ static void h_addMoney(void* self, int amount) {
     enforceScale();
     few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
     few1n_forcePlate(); // ozel plaka acikken il2cpp ile zorla (hook olu)
+    // arac rengi acikken materyalleri periyodik yenile (araba/parca degisebilir)
+    if (isCarColorEnabled && ptrOk(g_carDrive) && (g_carMatCount == 0 || (g_findTick % 20 == 0))) few1n_refreshCarMats();
     // OTOMATIK TIP ARAMA: araba tipi yoksa periyodik yeniden coz.
     // Araba assembly'si sadece yarisa girince yuklenir -> aciliste bulunamayabilir.
     static int retryTick = 0, retryCount = 0;
@@ -1860,6 +1996,26 @@ static void h_addMoney(void* self, int amount) {
 }
 
 - (void)tapNitro     { isInfiniteNitroEnabled  = !isInfiniteNitroEnabled;  saveBool(@"nitro", isInfiniteNitroEnabled);      [self refreshUI]; }
+- (void)tapNoClip    { isNoClip   = !isNoClip;   saveBool(@"noclip", isNoClip);     [self refreshUI]; }
+- (void)tapAntiGrav  { isAntiGrav = !isAntiGrav; saveBool(@"antigrav", isAntiGrav); [self refreshUI]; }
+- (void)tapCarColor  { isCarColorEnabled = !isCarColorEnabled; saveBool(@"carcolor", isCarColorEnabled); if (isCarColorEnabled) few1n_refreshCarMats(); [self refreshUI]; }
+- (void)tapCarColorRainbow { carColorRainbow = !carColorRainbow; saveBool(@"carrainbow", carColorRainbow); [self refreshUI]; }
+- (void)pickCarColor {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3A8 Sabit Renk" message:@"Renk sec (RGB dongu kapaliyken)" preferredStyle:UIAlertControllerStyleActionSheet];
+    void (^add)(NSString*, float, float, float) = ^(NSString *nm, float r, float g, float b){
+        [ac addAction:[UIAlertAction actionWithTitle:nm style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            g_carColor = (Color4){r,g,b,1.0f}; carColorRainbow = false;
+            saveBool(@"carrainbow", false); saveFloat(@"carR", r); saveFloat(@"carG", g); saveFloat(@"carB", b);
+            isCarColorEnabled = true; saveBool(@"carcolor", true); few1n_refreshCarMats(); [self refreshUI];
+        }]];
+    };
+    add(@"\U0001F534 Kirmizi", 1,0,0); add(@"\U0001F7E0 Turuncu", 1,0.5f,0); add(@"\U0001F7E1 Sari", 1,1,0);
+    add(@"\U0001F7E2 Yesil", 0,1,0); add(@"\U0001F535 Mavi", 0,0.4f,1); add(@"\U0001F7E3 Mor", 0.6f,0,1);
+    add(@"⚫ Siyah", 0.02f,0.02f,0.02f); add(@"⚪ Beyaz", 1,1,1);
+    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    if (ac.popoverPresentationController) { ac.popoverPresentationController.sourceView = self.panel; ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, self.panel.bounds.size.height/2, 1, 1); }
+    [self present:ac];
+}
 - (void)tapFly       { isFlyEnabled            = !isFlyEnabled;            saveBool(@"fly", isFlyEnabled);                  [self refreshUI]; }
 - (void)tapLowGrav   { isLowGravEnabled        = !isLowGravEnabled;        saveBool(@"lowgrav", isLowGravEnabled);          [self refreshUI]; }
 - (void)tapColorChat { isColorChatEnabled       = !isColorChatEnabled;      saveBool(@"colorchat", isColorChatEnabled);      [self refreshUI]; }
@@ -2814,6 +2970,12 @@ static void restoreSettings(void) {
     isInfiniteNitroEnabled = loadBool(@"nitro", false);
     isCarPanelEnabled      = loadBool(@"carpanel", false);
     isEspEnabled           = false;   // ESP her aciliste kapali baslar (overlay guvenligi)
+    isSpeedHud             = false;   // HUD da kapali baslar
+    isNoClip               = loadBool(@"noclip", false);
+    isAntiGrav             = loadBool(@"antigrav", false);
+    isCarColorEnabled      = false;   // renk her aciliste kapali (materyal onbellegi bos)
+    carColorRainbow        = loadBool(@"carrainbow", true);
+    g_carColor             = (Color4){ loadFloat(@"carR",1.0f), loadFloat(@"carG",0.0f), loadFloat(@"carB",0.0f), 1.0f };
     asciiColorCycle        = loadBool(@"asciiColor", false);
     lyricsColorCycle       = loadBool(@"lyricsColor", true);
     lyricsLoop             = loadBool(@"lyricsLoop", false);
@@ -2925,7 +3087,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v26.8 basladi, UnityFramework araniyor...");
+    FLog(@"v27.1 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
