@@ -81,10 +81,21 @@ static int  spamStyle = 0;              // 0=duz 1=cerceveli 2=sembol 3=renkli
 static char customPlateText[64] = "FEW1N";
 static char chatSpamText[128] = "FEW1N MOD MENU!";
 static int  customMoneyAmount = 100000000;
+// ==== SARKI SOZU -> CHAT (altyazi gibi) ====
+static bool isLyricsEnabled = false;
+static int  g_lyricsIdx = 0;             // hangi satir
+static float lyricsInterval = 2.0f;      // satirlar arasi sn
+static bool lyricsColorCycle = true;     // her satiri farkli renk
+static bool lyricsLoop = false;          // bitince bastan
+static NSMutableArray *g_lyrics = nil;   // satirlar
+// ==== ASCII/spam icin renk + isim dongusu (chat spammer gibi) ====
+static bool asciiColorCycle = false;     // ASCII spam'i gokkusagi renkte gonder
+static int  g_colorIdx = 0;              // donen renk indeksi
 
 static NSTimer *spamTimer = nil;
 static NSTimer *tickTimer = nil;
 static NSTimer *asciiTimer = nil;
+static NSTimer *lyricsTimer = nil;
 static NSTimer *roomSpamTimer = nil;
 
 // ASCII animasyon setleri (her set = kareler dizisi)
@@ -198,6 +209,13 @@ static void* g_mCamGetMain = NULL;     // UnityEngine.Camera.get_main
 static void* g_mWorldToScreen = NULL;  // Camera.WorldToScreenPoint(Vector3)->Vector3
 static void* g_mFindObjectsPlural = NULL; // Object.FindObjectsOfType(Type)->array (TUM nesneler)
 static bool  isEspEnabled = false;
+// ==== PLAKA (il2cpp ile zorla - hook olu) ====
+static void* g_mTmpSetText = NULL;     // TMP_Text.set_text(string)
+static void* g_plateTypeObj = NULL;    // typeof(PlateVariant)
+// ==== RIGIDBODY YEDEK YOLU (CarDriveSystem bulunamazsa kameraya en yakin arac) ====
+static void* g_rbTypeObj = NULL;       // typeof(UnityEngine.Rigidbody)
+static void* g_mCompGetTransform = NULL; // Component.get_transform
+static void* g_mTransGetPos = NULL;    // Transform.get_position -> Vector3
 // ==== ARAC DEGISTIRME (hooksuz, il2cpp singleton uzerinden) ====
 // HR_MainMenuHandler: static field 'iiz' = singleton
 // metodlar: SelectCar / PositiveCarIndex / NegativeCarIndex / BuyCar
@@ -349,15 +367,30 @@ static void few1n_initIl2cpp(void) {
                 }
                 g_mRbGetPos = i_class_get_method_from_name(rbClass, "get_position", 0);
                 g_mRbSetPos = i_class_get_method_from_name(rbClass, "set_position", 1);
-                FLog([NSString stringWithFormat:@"Rigidbody bulundu! get=%p set=%p", g_mRbGetVel, g_mRbSetVel]);
+                g_rbTypeObj = few1n_typeObjOf(rbClass);   // FindObjectsOfType(Rigidbody) yedek yolu icin
+                FLog([NSString stringWithFormat:@"Rigidbody bulundu! get=%p set=%p tip=%p", g_mRbGetVel, g_mRbSetVel, g_rbTypeObj]);
             }
+        }
+        if (!g_mCompGetTransform) {
+            void* cmp = i_class_from_name(img, "UnityEngine", "Component");
+            if (cmp) g_mCompGetTransform = i_class_get_method_from_name(cmp, "get_transform", 0);
+        }
+        if (!g_mTransGetPos) {
+            void* tr = i_class_from_name(img, "UnityEngine", "Transform");
+            if (tr) g_mTransGetPos = i_class_get_method_from_name(tr, "get_position", 0);
         }
         if (!g_mSetRichText) {
             void* tmpClass = i_class_from_name(img, "TMPro", "TMP_Text");
             if (tmpClass) {
                 g_mSetRichText = i_class_get_method_from_name(tmpClass, "set_richText", 1);
-                FLog([NSString stringWithFormat:@"TMP_Text bulundu! set_richText=%p", g_mSetRichText]);
+                g_mTmpSetText  = i_class_get_method_from_name(tmpClass, "set_text", 1);
+                FLog([NSString stringWithFormat:@"TMP_Text bulundu! set_richText=%p set_text=%p", g_mSetRichText, g_mTmpSetText]);
             }
+        }
+        if (!g_plateTypeObj) {
+            void* pc = i_class_from_name(img, "", "PlateVariant");
+            if (!pc) pc = few1n_findClassByName(img, "PlateVariant");
+            if (pc) { g_plateTypeObj = few1n_typeObjOf(pc); FLog([NSString stringWithFormat:@"PlateVariant tipi=%p", g_plateTypeObj]); }
         }
         if (!g_roomOptionsClass) {
             void* roc = i_class_from_name(img, "Photon.Realtime", "RoomOptions");
@@ -759,6 +792,45 @@ static void* few1n_findAllCars(int* outCount) {
     } @catch (...) { return NULL; }
 }
 
+// Bir Component'in dunya konumu (transform.position)
+static bool few1n_objPos(void* obj, Vec3* out) {
+    *out = (Vec3){0,0,0};
+    if (!ptrOk(obj) || !g_mCompGetTransform || !g_mTransGetPos || !i_runtime_invoke) return false;
+    @try {
+        void* tr = i_runtime_invoke(g_mCompGetTransform, obj, NULL, NULL);
+        if (!ptrOk(tr)) return false;
+        void* box = i_runtime_invoke(g_mTransGetPos, tr, NULL, NULL);
+        if (!ptrOk(box)) return false;
+        *out = *(Vec3*)((uintptr_t)box + 0x10);
+        return true;
+    } @catch (...) { return false; }
+}
+// YEDEK: CarDriveSystem bulunamazsa kameraya en yakin Rigidbody = oyuncunun araci.
+// Boylece zipla/isinlan/ucus g_rb'siz kalmaz (hiz/nitro yine CarDriveSystem ister).
+static void few1n_findRbFallback(void) {
+    if (!g_rbTypeObj || !g_mFindObjectsPlural || !g_mCamGetMain || !i_runtime_invoke) return;
+    @try {
+        void* cam = i_runtime_invoke(g_mCamGetMain, NULL, NULL, NULL);
+        if (!ptrOk(cam)) return;
+        Vec3 camPos; if (!few1n_objPos(cam, &camPos)) return;
+        void* a[1]; a[0] = g_rbTypeObj;
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return;
+        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+        if (cnt < 0 || cnt > 256) return;
+        void** rbs = (void**)((uintptr_t)arr + 0x20);
+        void* best = NULL; float bestD = 1e18f;
+        for (int i = 0; i < cnt; i++) {
+            void* rb = rbs[i]; if (!ptrOk(rb)) continue;
+            Vec3 p; rbGetPosIl(rb, &p);
+            float dx=p.x-camPos.x, dy=p.y-camPos.y, dz=p.z-camPos.z;
+            float d = dx*dx+dy*dy+dz*dz;
+            if (d < bestD) { bestD = d; best = rb; }
+        }
+        if (ptrOk(best)) g_rb = best;
+    } @catch (...) {}
+}
+
 // SADECE ARAMA - pahali FindObjectOfType burada, seyrek cagrilir (tick, 0.3s).
 // Uygulama (nitro/hiz/panel) frameTick'te onbellekten yapilir -> ucuz, her frame.
 static void few1n_findCar(void) {
@@ -786,6 +858,9 @@ static void few1n_findCar(void) {
                 if (ptrOk(nos)) g_carNitro = nos;
             }
         }
+        // YEDEK: hala Rigidbody yoksa (CarDriveSystem bulunamadi) kameraya en yakin araci al
+        // Boylece zipla/isinlan/ucus/boost/dondur g_rb'siz kalmaz.
+        if (!ptrOk(g_rb) && ((g_findTick % 4) == 0)) few1n_findRbFallback();
     } @catch (...) {}
 }
 
@@ -826,6 +901,41 @@ static void few1n_applyCar(void) {
             *(unsigned char*)(d + 0x62) = 1;
             *(float*)(d + 0x64) = carSteerPower;
             *(float*)(d + 0x98) = carTopSpeed;
+        }
+    } @catch (...) {}
+}
+
+// ===== PLAKA ZORLA (il2cpp, hook olu) =====
+// PlateVariant.parts (+0x20) = TMP_Text[]; disableSplit (+0x29). Her karede zorla yaz.
+// NOT: sadece SENIN ekranindaki plaka - server/digerleri baska gorebilir.
+static void* g_plateEmptyStr = NULL;
+static void few1n_forcePlate(void) {
+    if (!isCustomPlateEnabled || !g_mTmpSetText || !g_plateTypeObj || !g_mFindObjectsPlural || !i_runtime_invoke) return;
+    @try {
+        void* a[1]; a[0] = g_plateTypeObj;
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return;
+        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+        if (cnt < 0 || cnt > 64) return;
+        void** plates = (void**)((uintptr_t)arr + 0x20);
+        void* str = mkStr([NSString stringWithUTF8String:customPlateText]);
+        if (!str) return;
+        if (!g_plateEmptyStr) g_plateEmptyStr = mkStr(@"");
+        for (int i = 0; i < cnt; i++) {
+            void* pv = plates[i];
+            if (!ptrOk(pv)) continue;
+            *(unsigned char*)((uintptr_t)pv + 0x29) = 1;        // disableSplit = true (tek parca)
+            void* parts = *(void**)((uintptr_t)pv + 0x20);      // TMP_Text[]
+            if (!ptrOk(parts)) continue;
+            int pc = (int)(*(uintptr_t*)((uintptr_t)parts + 0x18));
+            if (pc < 0 || pc > 32) continue;
+            void** tp = (void**)((uintptr_t)parts + 0x20);
+            for (int k = 0; k < pc; k++) {
+                void* t = tp[k];
+                if (!ptrOk(t)) continue;
+                void* pa[1]; pa[0] = (k == 0) ? str : g_plateEmptyStr;   // ilk parca=metin, digerleri bos
+                i_runtime_invoke(g_mTmpSetText, t, pa, NULL);
+            }
         }
     } @catch (...) {}
 }
@@ -1042,6 +1152,8 @@ static void h_addMoney(void* self, int amount) {
 @property (nonatomic, strong) UIView *espOverlay;
 @property (nonatomic, strong) NSMutableArray *espLabels;
 @property (nonatomic, strong) NSTimer *espTimer;
+@property (nonatomic, strong) UIView *lyricsOverlay;
+@property (nonatomic, strong) UITextView *lyricsInput;
 @property (nonatomic, strong) NSMutableDictionary *speedBtns;
 @property (nonatomic, strong) UIButton *plateBtn;
 @property (nonatomic, strong) UIButton *nameBtn;
@@ -1144,7 +1256,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v26.4  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v26.8  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1245,6 +1357,15 @@ static void h_addMoney(void* self, int amount) {
         [self.contentView addSubview:arow];
         y += 52;
     }
+    y = [self toggle:@"\U0001F308  ASCII Renk Dongusu" sub:@"Her kareyi farkli renkte gonder" key:@"asciicolor" atY:y action:@selector(tapAsciiColor)];
+
+    y = [self header:@"\U0001F3B5  SARKI SOZU (altyazi)" atY:y];
+    y = [self actionRow:@"\U0001F50D  Sarki Ara (internetten getir)" color:C_ON atY:y action:@selector(fetchLyricsByName)];
+    y = [self toggle:@"▶️  Sarki Sozunu Baslat" sub:@"Her satiri sirayla chate yazar" key:@"lyrics" atY:y action:@selector(tapLyrics)];
+    y = [self actionRow:@"✏️  Elle Sarki Sozu Gir (cok satir)" color:C_CYAN atY:y action:@selector(editLyrics)];
+    y = [self actionRow:@"⏱️  Satir Araligi Ayarla" color:C_CYAN atY:y action:@selector(editLyricsInterval)];
+    y = [self toggle:@"\U0001F308  Renkli Satirlar" sub:@"Her satir farkli renk" key:@"lyricsColor" atY:y action:@selector(tapLyricsColor)];
+    y = [self toggle:@"\U0001F501  Bitince Basa Sar" sub:@"Sarki sozunu tekrarla" key:@"lyricsLoop" atY:y action:@selector(tapLyricsLoop)];
 
     y = [self header:@"\U0001F522  PLAKA" atY:y];
     self.plateBtn = [self actionButtonRow:&y];
@@ -1461,6 +1582,10 @@ static void h_addMoney(void* self, int amount) {
     [self setToggle:@"roomcont"  on:roomSpamContinuous];
     [self setToggle:@"automoney" on:isAutoMoneyEnabled];
     [self setToggle:@"esp"       on:isEspEnabled];
+    [self setToggle:@"asciicolor" on:asciiColorCycle];
+    [self setToggle:@"lyrics"    on:isLyricsEnabled];
+    [self setToggle:@"lyricsColor" on:lyricsColorCycle];
+    [self setToggle:@"lyricsLoop" on:lyricsLoop];
 
     // canli durum rozeti
     if (self.statusLabel && self.statusCard) {
@@ -1684,6 +1809,17 @@ static void h_addMoney(void* self, int amount) {
 - (void)tick {
     enforceScale();
     few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
+    few1n_forcePlate(); // ozel plaka acikken il2cpp ile zorla (hook olu)
+    // OTOMATIK TIP ARAMA: araba tipi yoksa periyodik yeniden coz.
+    // Araba assembly'si sadece yarisa girince yuklenir -> aciliste bulunamayabilir.
+    static int retryTick = 0, retryCount = 0;
+    if (!g_carDriveTypeObj && retryCount < 40) {   // ~40 deneme (yaklasik 2 dk)
+        if (++retryTick >= 6) {                    // her ~1.8 sn
+            retryTick = 0; retryCount++;
+            few1n_initIl2cpp();                    // guard'li: sadece eksikleri arar
+            if (g_carDriveTypeObj) FLog(@"Araba tipi BULUNDU (otomatik yeniden arama)");
+        }
+    }
     // ~6 sn'de bir tek satir teshis (log spam azaltildi)
     static int tc = 0;
     if (++tc >= 20) {
@@ -1762,6 +1898,228 @@ static void h_addMoney(void* self, int amount) {
     [b setTitle:[NSString stringWithFormat:@"\U0001F3AD Spam Stili: %@", names[spamStyle]] forState:UIControlStateNormal];
 }
 
+// Metni donen gokkusagi renkle sar (chat'te richText render edilir -> renkli gorunur)
+static NSString* rainbowWrap(NSString* text, int idx) {
+    static NSArray *cols = nil;
+    if (!cols) cols = @[@"FF3B30",@"FF9500",@"FFCC00",@"34C759",@"00C7BE",@"007AFF",@"AF52DE",@"FF2D55"];
+    NSString *c = cols[((idx % (int)cols.count) + (int)cols.count) % (int)cols.count];
+    return [NSString stringWithFormat:@"<color=#%@><b>%@</b></color>", c, text];
+}
+
+// ===== SARKI SOZU -> CHAT (altyazi gibi her satiri sirayla gonder) =====
+- (void)stopLyrics {
+    isLyricsEnabled = false;
+    if (lyricsTimer) { [lyricsTimer invalidate]; lyricsTimer = nil; }
+    [self refreshUI];
+}
+- (void)fireLyrics {
+    if (!chatGetInst || !chatSend || !g_lyrics || g_lyrics.count == 0) { [self stopLyrics]; return; }
+    @try {
+        if (g_lyricsIdx >= (int)g_lyrics.count) {
+            if (lyricsLoop) { g_lyricsIdx = 0; }
+            else { FLog(@"Sarki sozu bitti"); [self stopLyrics]; return; }
+        }
+        NSString *line = g_lyrics[g_lyricsIdx];
+        g_lyricsIdx++;
+        if (line.length == 0) return;   // bos satiri atla (zamanlamayi korur)
+        NSString *msg = lyricsColorCycle ? rainbowWrap(line, g_colorIdx++) : line;
+        void* mgr = chatGetInst();
+        void* s = mkStr(msg);
+        if (mgr && s) chatSend(mgr, s);
+    } @catch (...) {}
+}
+- (void)tapLyrics {
+    if (!isLyricsEnabled) {
+        if (!g_lyrics || g_lyrics.count == 0) { FLog(@"Once sarki sozu gir (kalem butonu)"); [self refreshUI]; return; }
+        isLyricsEnabled = true;
+        g_lyricsIdx = 0; g_colorIdx = 0;
+        if (lyricsTimer) [lyricsTimer invalidate];
+        lyricsTimer = [NSTimer scheduledTimerWithTimeInterval:lyricsInterval target:self selector:@selector(fireLyrics) userInfo:nil repeats:YES];
+        FLog([NSString stringWithFormat:@"Sarki sozu basladi (%lu satir, %.1fs aralik)", (unsigned long)g_lyrics.count, lyricsInterval]);
+    } else {
+        [self stopLyrics];
+    }
+    [self refreshUI];
+}
+- (void)tapLyricsColor { lyricsColorCycle = !lyricsColorCycle; saveBool(@"lyricsColor", lyricsColorCycle); [self refreshUI]; }
+- (void)tapLyricsLoop  { lyricsLoop = !lyricsLoop; saveBool(@"lyricsLoop", lyricsLoop); [self refreshUI]; }
+
+// Cok satirli sarki sozu giris ekrani (her satir ayri chat mesaji olur)
+- (void)editLyrics {
+    UIWindow *w = getKeyWindow(); if (!w) return;
+    if (self.lyricsOverlay) { [self.lyricsOverlay removeFromSuperview]; self.lyricsOverlay = nil; }
+    CGFloat W = w.bounds.size.width, H = w.bounds.size.height;
+    CGFloat ow = MIN(560.0, W-20), oh = MIN(400.0, H-20);
+    self.lyricsOverlay = [[UIView alloc] initWithFrame:CGRectMake((W-ow)/2,(H-oh)/2,ow,oh)];
+    self.lyricsOverlay.backgroundColor = [UIColor colorWithRed:0.97 green:0.99 blue:1.0 alpha:0.99];
+    self.lyricsOverlay.layer.cornerRadius = 16;
+    self.lyricsOverlay.layer.borderWidth = 1.5;
+    self.lyricsOverlay.layer.borderColor = C_ACCENT.CGColor;
+
+    UILabel *tl = [[UILabel alloc] initWithFrame:CGRectMake(14,10,ow-28,22)];
+    tl.text = @"\U0001F3B5 Sarki Sozu (her satir ayri chat mesaji)";
+    tl.textColor = C_TEXT; tl.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
+    [self.lyricsOverlay addSubview:tl];
+
+    self.lyricsInput = [[UITextView alloc] initWithFrame:CGRectMake(10,38,ow-20,oh-96)];
+    self.lyricsInput.backgroundColor = [UIColor colorWithRed:0.93 green:0.96 blue:0.99 alpha:1.0];
+    self.lyricsInput.textColor = C_TEXT;
+    self.lyricsInput.font = [UIFont systemFontOfSize:14];
+    self.lyricsInput.layer.cornerRadius = 8;
+    if (g_lyrics.count) self.lyricsInput.text = [g_lyrics componentsJoinedByString:@"\n"];
+    else self.lyricsInput.text = @"";
+    [self.lyricsOverlay addSubview:self.lyricsInput];
+
+    UIButton *save = [UIButton buttonWithType:UIButtonTypeSystem];
+    save.frame = CGRectMake(10, oh-46, (ow-30)/2, 34);
+    save.backgroundColor = C_ON; save.layer.cornerRadius = 8;
+    [save setTitle:@"Kaydet" forState:UIControlStateNormal];
+    [save setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    save.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
+    [save addTarget:self action:@selector(saveLyrics) forControlEvents:UIControlEventTouchUpInside];
+    [self.lyricsOverlay addSubview:save];
+
+    UIButton *cancel = [UIButton buttonWithType:UIButtonTypeSystem];
+    cancel.frame = CGRectMake(ow/2+5, oh-46, (ow-30)/2, 34);
+    cancel.backgroundColor = [UIColor colorWithRed:0.85 green:0.88 blue:0.92 alpha:1.0]; cancel.layer.cornerRadius = 8;
+    [cancel setTitle:@"Iptal" forState:UIControlStateNormal];
+    [cancel setTitleColor:C_TEXT forState:UIControlStateNormal];
+    cancel.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    [cancel addTarget:self action:@selector(closeLyrics) forControlEvents:UIControlEventTouchUpInside];
+    [self.lyricsOverlay addSubview:cancel];
+
+    [w addSubview:self.lyricsOverlay];
+    [self.lyricsInput becomeFirstResponder];
+}
+- (void)saveLyrics {
+    NSString *txt = self.lyricsInput.text ?: @"";
+    NSArray *raw = [txt componentsSeparatedByString:@"\n"];
+    g_lyrics = [NSMutableArray array];
+    for (NSString *l in raw) {
+        NSString *t = [l stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        [g_lyrics addObject:t];   // bos satirlari da tut (zamanlama duraklamasi olur)
+    }
+    saveStr(@"lyricsText", txt);
+    FLog([NSString stringWithFormat:@"Sarki sozu kaydedildi: %lu satir", (unsigned long)g_lyrics.count]);
+    [self closeLyrics];
+    [self refreshUI];
+}
+- (void)closeLyrics {
+    if (self.lyricsInput) [self.lyricsInput resignFirstResponder];
+    if (self.lyricsOverlay) { [self.lyricsOverlay removeFromSuperview]; self.lyricsOverlay = nil; }
+}
+- (void)editLyricsInterval {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3B5 Satir Araligi"
+                                                               message:@"Her satir arasi saniye (0.3 - 10)" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.keyboardType = UIKeyboardTypeDecimalPad; tf.text = [NSString stringWithFormat:@"%.1f", lyricsInterval]; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Kaydet" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        float v = [ac.textFields.firstObject.text floatValue];
+        if (v >= 0.3f && v <= 10.0f) { lyricsInterval = v; saveFloat(@"lyricsInterval", v); }
+        [self refreshUI];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
+// ===== SARKI ARA + SEC + SOZU GETIR (arama cubugu, sen yazmazsin) =====
+// api.lyrics.ovh: ucretsiz, anahtarsiz. /suggest -> arama, /v1 -> sozler
+// NOT: YT/Spotify URL'si sarki adina cevrilemez -> sarki ADINI yaz (link degil).
+- (void)fetchLyricsByName {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3B5 Sarki Ara"
+                                                               message:@"Sarki adi yaz, listeden sec\n(URL degil, isim: orn 'kuzu kuzu')" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
+        tf.placeholder = @"Sarki / sanatci adi";
+        NSString *last = loadStr(@"lastSong", @"");
+        if (last.length) tf.text = last;
+    }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"\U0001F50D Ara" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *q = ac.textFields.firstObject.text ?: @"";
+        if (q.length < 2) { FLog(@"Arama cok kisa"); return; }
+        saveStr(@"lastSong", q);
+        [self doSearchLyrics:q];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+// Aramayi yap, eslesen sarkilari liste halinde goster
+- (void)doSearchLyrics:(NSString*)q {
+    NSString *eq = [q stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]] ?: @"";
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://api.lyrics.ovh/suggest/%@", eq]];
+    if (!url) { FLog(@"Gecersiz arama"); return; }
+    FLog([NSString stringWithFormat:@"Araniyor: %@ ...", q]);
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err){
+        NSMutableArray *results = [NSMutableArray array];   // her eleman: @[artist, title]
+        if (data && !err) {
+            @try {
+                NSDictionary *j = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                NSArray *arr = j[@"data"];
+                if ([arr isKindOfClass:[NSArray class]]) {
+                    for (NSDictionary *song in arr) {
+                        if (![song isKindOfClass:[NSDictionary class]]) continue;
+                        NSString *title = song[@"title"];
+                        NSString *artist = @"";
+                        if ([song[@"artist"] isKindOfClass:[NSDictionary class]]) artist = song[@"artist"][@"name"];
+                        if ([title isKindOfClass:[NSString class]]) {
+                            [results addObject:@[artist ?: @"", title]];
+                            if (results.count >= 8) break;
+                        }
+                    }
+                }
+            } @catch (...) {}
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (results.count == 0) { FLog(@"Sonuc bulunamadi, baska ara"); return; }
+            UIAlertController *pick = [UIAlertController alertControllerWithTitle:@"\U0001F3B5 Sarki Sec"
+                                                                        message:[NSString stringWithFormat:@"%lu sonuc", (unsigned long)results.count] preferredStyle:UIAlertControllerStyleAlert];
+            for (NSArray *r in results) {
+                NSString *artist = r[0], *title = r[1];
+                NSString *label = artist.length ? [NSString stringWithFormat:@"%@ - %@", artist, title] : title;
+                [pick addAction:[UIAlertAction actionWithTitle:label style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+                    [self doFetchLyricsArtist:artist title:title];
+                }]];
+            }
+            [pick addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+            [self present:pick];
+        });
+    }];
+    [task resume];
+}
+- (void)doFetchLyricsArtist:(NSString*)artist title:(NSString*)title {
+    [self doFetchLyrics:[NSString stringWithFormat:@"%@ - %@", artist ?: @"", title ?: @""]];
+}
+- (void)doFetchLyrics:(NSString*)q {
+    // "Sanatci - Sarki" ayir; ayrac yoksa hepsini baslik say
+    NSString *artist = @"", *title = q;
+    NSRange dash = [q rangeOfString:@" - "];
+    if (dash.location != NSNotFound) { artist = [q substringToIndex:dash.location]; title = [q substringFromIndex:dash.location + 3]; }
+    NSCharacterSet *set = [NSCharacterSet URLPathAllowedCharacterSet];
+    NSString *ea = [[artist stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] stringByAddingPercentEncodingWithAllowedCharacters:set] ?: @"";
+    NSString *et = [[title stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] stringByAddingPercentEncodingWithAllowedCharacters:set] ?: @"";
+    NSString *urlStr = [NSString stringWithFormat:@"https://api.lyrics.ovh/v1/%@/%@", ea, et];
+    NSURL *url = [NSURL URLWithString:urlStr];
+    if (!url) { FLog(@"Gecersiz sarki adi"); return; }
+    FLog([NSString stringWithFormat:@"Sarki araniyor: %@ ...", q]);
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err){
+        NSString *lyr = nil;
+        if (data && !err) {
+            @try {
+                NSDictionary *j = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                if ([j isKindOfClass:[NSDictionary class]] && [j[@"lyrics"] isKindOfClass:[NSString class]]) lyr = j[@"lyrics"];
+            } @catch (...) {}
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!lyr || lyr.length == 0) { FLog(@"Sarki sozu bulunamadi (isim yanlis olabilir, 'Sanatci - Sarki' dene)"); return; }
+            NSArray *lines = [lyr componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+            g_lyrics = [NSMutableArray array];
+            for (NSString *l in lines) [g_lyrics addObject:[l stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
+            saveStr(@"lyricsText", [g_lyrics componentsJoinedByString:@"\n"]);
+            FLog([NSString stringWithFormat:@"✓ Sarki sozu getirildi: %lu satir. 'Baslat'a bas.", (unsigned long)g_lyrics.count]);
+            [self refreshUI];
+        });
+    }];
+    [task resume];
+}
+
 - (void)fireAscii {
     if (!chatGetInst || !chatSend) return;
     @try {
@@ -1773,12 +2131,14 @@ static void h_addMoney(void* self, int amount) {
         if (asciiFrameIdx < 0 || asciiFrameIdx >= (int)frames.count) asciiFrameIdx = 0;
         NSString *frame = frames[asciiFrameIdx];
         asciiFrameIdx++;
+        if (asciiColorCycle) frame = rainbowWrap(frame, g_colorIdx++);   // gokkusagi renk dongusu
         void* mgr = chatGetInst();
         if (!mgr) return;
         void* s = mkStr(frame);
         if (s) chatSend(mgr, s);
     } @catch (...) {}
 }
+- (void)tapAsciiColor { asciiColorCycle = !asciiColorCycle; saveBool(@"asciiColor", asciiColorCycle); [self refreshUI]; }
 
 - (void)tapAsciiAnim {
     isAsciiAnimEnabled = !isAsciiAnimEnabled;
@@ -2190,11 +2550,13 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
 }
 
 - (void)editRoomTTL {
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⏱️ Oda Acik Kalma" message:@"Kac saniye acik kalsin?" preferredStyle:UIAlertControllerStyleAlert];
-    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.keyboardType = UIKeyboardTypeNumberPad; tf.text = [NSString stringWithFormat:@"%d", roomSpamTTL/1000]; }];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⏱️ Oda Acik Kalma"
+        message:@"Kac DAKIKA acik kalsin? (max 59)\nNot: Photon sunucusu genelde 5dk'da sinirlar" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.keyboardType = UIKeyboardTypeNumberPad; tf.text = [NSString stringWithFormat:@"%d", roomSpamTTL/60000]; tf.placeholder = @"dakika (1-59)"; }];
     [ac addAction:[UIAlertAction actionWithTitle:@"Kaydet" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-        int sec = [ac.textFields.firstObject.text intValue];
-        if (sec > 0) { if (sec > 300) sec = 300; roomSpamTTL = sec * 1000; saveInt(@"roomTTL", roomSpamTTL); }
+        int mins = [ac.textFields.firstObject.text intValue];
+        if (mins > 0) { if (mins > 59) mins = 59; roomSpamTTL = mins * 60000; saveInt(@"roomTTL", roomSpamTTL);
+            FLog([NSString stringWithFormat:@"Oda suresi: %d dk (%d ms) - Photon clamp'leyebilir", mins, roomSpamTTL]); }
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
     [self present:ac];
@@ -2386,8 +2748,10 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
         } @catch (...) { [st appendString:@"[X] Base okunamiyor (adres cop)\n"]; problems++; }
     }
     if (!g_il2cppReady)              { [st appendString:@"[X] il2cpp API hazir degil\n"]; problems++; }
+    // NOT: Bu cihazda hook (MSHookFunction) calismiyor - bu NORMAL, hata degil.
+    // Mod il2cpp yolunu kullaniyor. Sadece bilgi olarak gosterilir, sorun sayilmaz.
     if (hookFailCount > 0 && hookSuccessCount == 0)
-                                     { [st appendFormat:@"[X] TUM hooklar olu (%d/%d) - Substrate yaziyamiyor\n", hookFailCount, hookFailCount]; problems++; }
+                                     { [st appendString:@"[i] Hooklar kapali (normal) - il2cpp yolu aktif\n"]; }
     if (!g_mSetTS)                   { [st appendString:@"[X] Time.set_timeScale metodu yok\n"]; problems++; }
     if (!g_mRbSetVel)                { [st appendString:@"[X] Rigidbody.set_velocity metodu yok\n"]; problems++; }
     if (!g_mFindObjectOfType && !g_mFindObjInactive && !g_mFindAnyByType)
@@ -2450,6 +2814,13 @@ static void restoreSettings(void) {
     isInfiniteNitroEnabled = loadBool(@"nitro", false);
     isCarPanelEnabled      = loadBool(@"carpanel", false);
     isEspEnabled           = false;   // ESP her aciliste kapali baslar (overlay guvenligi)
+    asciiColorCycle        = loadBool(@"asciiColor", false);
+    lyricsColorCycle       = loadBool(@"lyricsColor", true);
+    lyricsLoop             = loadBool(@"lyricsLoop", false);
+    lyricsInterval         = loadFloat(@"lyricsInterval", 2.0f);
+    { NSString *lt = loadStr(@"lyricsText", @"");
+      if (lt.length) { g_lyrics = [[NSMutableArray alloc] init];
+        for (NSString *l in [lt componentsSeparatedByString:@"\n"]) [g_lyrics addObject:[l stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]]; } }
     carAccelPower          = loadFloat(@"caraccel", 3.0f);
     carSteerPower          = loadFloat(@"carsteer", 1.0f);
     carTopSpeed            = loadFloat(@"cartop",   300.0f);
@@ -2554,7 +2925,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v26.4 basladi, UnityFramework araniyor...");
+    FLog(@"v26.8 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
