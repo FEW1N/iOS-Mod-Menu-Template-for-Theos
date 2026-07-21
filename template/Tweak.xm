@@ -233,6 +233,18 @@ static Color4 g_carColor = {1.0f, 0.0f, 0.0f, 1.0f};   // sabit renk (kirmizi)
 static void* g_carMats[96]; static int g_carMatCount = 0;  // materyal onbellegi
 static bool  isNoClip = false;         // hayalet mod (duvardan gec)
 static bool  isAntiGrav = false;       // yercekimi kapali (ay modu)
+// ==== ARAC BOYUTU + DRIFT ====
+static void* g_mTransSetScale = NULL;  // Transform.set_localScale(Vector3)
+static bool  isCarSizeEnabled = false;
+static float carSizeVal = 1.0f;        // 0.3 - 3.0
+static bool  isDriftMode = false;
+static bool  g_driftSaved = false;
+static float g_origSteerHelper = 0, g_origTraction = 0;
+// ==== SUPER ARAC (CarDriveSettings gelismis ayar) ====
+static bool  isSuperCar = false;
+static float superMult = 3.0f;         // guc carpani
+static bool  g_superSaved = false;
+static float g_origTorque = 0, g_origTopS = 0, g_origNitroTop = 0, g_origNitroTrq = 0;
 static bool  isSpeedHud = false;       // hiz gostergesi HUD
 static bool  g_noClipApplied = false;  // durum takibi (surekli set etmemek icin)
 static bool  g_antiGravApplied = false;
@@ -411,7 +423,8 @@ static void few1n_initIl2cpp(void) {
         }
         if (!g_mTransGetPos) {
             void* tr = i_class_from_name(img, "UnityEngine", "Transform");
-            if (tr) g_mTransGetPos = i_class_get_method_from_name(tr, "get_position", 0);
+            if (tr) { g_mTransGetPos = i_class_get_method_from_name(tr, "get_position", 0);
+                      g_mTransSetScale = i_class_get_method_from_name(tr, "set_localScale", 1); }
         }
         if (!g_mSetRichText) {
             void* tmpClass = i_class_from_name(img, "TMPro", "TMP_Text");
@@ -875,17 +888,6 @@ static int g_espCount = 0;
             [txt drawAtPoint:CGPointMake(lb.origin.x + 3, lb.origin.y + 1) withAttributes:at];
         }
     }
-    if (isSpeedHud) {
-        NSString *s = [NSString stringWithFormat:@"%.0f", g_hudSpeed];
-        NSDictionary *big = @{NSFontAttributeName:[UIFont boldSystemFontOfSize:32], NSForegroundColorAttributeName:[UIColor whiteColor]};
-        NSDictionary *sm  = @{NSFontAttributeName:[UIFont boldSystemFontOfSize:11], NSForegroundColorAttributeName:[UIColor colorWithWhite:0.9 alpha:1]};
-        CGRect hud = CGRectMake(24, H - 116, 138, 64);
-        UIBezierPath *rp = [UIBezierPath bezierPathWithRoundedRect:hud cornerRadius:13];
-        CGContextSetFillColorWithColor(ctx, [UIColor colorWithRed:0 green:0.45 blue:0.85 alpha:0.72].CGColor);
-        CGContextAddPath(ctx, rp.CGPath); CGContextFillPath(ctx);
-        [s   drawAtPoint:CGPointMake(hud.origin.x + 14, hud.origin.y + 8)  withAttributes:big];
-        [@"km/s hiz" drawAtPoint:CGPointMake(hud.origin.x + 16, hud.origin.y + 46) withAttributes:sm];
-    }
 }
 @end
 
@@ -941,26 +943,34 @@ static void few1n_findCar(void) {
         // Her tick g_rb'yi dogrula, oldayse temizle (yedek yol yeniden bulur).
         if (g_rb && !unityAlive(g_rb)) g_rb = NULL;
 
-        // Arama throttle: araba yokken her tick, varken ~4 sn'de bir (respawn/degisim yakala)
-        if (((!g_carDrive) || (g_findTick % 12 == 0)) && g_carDriveTypeObj) {
-            void* found = few1n_findByType(g_carDriveTypeObj);
-            if (ptrOk(found)) {
-                if (found != g_carDrive) fFind++;
-                g_carDrive = found;
-                void* rb = *(void**)((uintptr_t)found + 0x48);   // _jfu_k__BackingField
-                if (ptrOk(rb)) g_rb = rb;
-            }
-        }
-        if (((!g_carNitro) || (g_findTick % 12 == 0)) && g_carInputTypeObj) {
+        // ===== BIRINCIL: CarPlayerInput = SADECE SENIN araban =====
+        // Uzak oyuncularin arabasinda bu bilesen YOK. Her odada seninkini kesin verir.
+        bool gotMine = false;
+        if (g_carInputTypeObj && ((!g_carDrive) || (!g_carNitro) || (g_findTick % 8 == 0))) {
             void* inp = few1n_findByType(g_carInputTypeObj);
             if (ptrOk(inp)) {
-                void* nos = *(void**)((uintptr_t)inp + 0x28);    // jhs -> CarNitro
+                void* drive = *(void**)((uintptr_t)inp + 0x20);   // jhr -> CarDriveSystem (SENIN)
+                if (unityAlive(drive)) {
+                    if (drive != g_carDrive) fFind++;
+                    g_carDrive = drive; gotMine = true;
+                    void* rb = *(void**)((uintptr_t)drive + 0x48); // Rigidbody (SENIN araban)
+                    if (ptrOk(rb)) g_rb = rb;
+                }
+                void* nos = *(void**)((uintptr_t)inp + 0x28);     // jhs -> CarNitro
                 if (ptrOk(nos)) g_carNitro = nos;
             }
         }
-        // YEDEK: hala Rigidbody yoksa (CarDriveSystem bulunamadi) kameraya en yakin araci al
-        // Boylece zipla/isinlan/ucus/boost/dondur g_rb'siz kalmaz.
-        if (!ptrOk(g_rb) && ((g_findTick % 4) == 0)) few1n_findRbFallback();
+        // IKINCIL: CarPlayerInput bulunamadiysa (garaj vs) CarDriveSystem'i dene
+        if (!gotMine && ((!g_carDrive) || (g_findTick % 12 == 0)) && g_carDriveTypeObj) {
+            void* found = few1n_findByType(g_carDriveTypeObj);
+            if (ptrOk(found)) {
+                g_carDrive = found;
+                void* rb = *(void**)((uintptr_t)found + 0x48);
+                if (ptrOk(rb)) g_rb = rb;
+            }
+        }
+        // SON CARE: yukaridakiler g_rb vermediyse kameraya en yakin araci al
+        if (!unityAlive(g_rb) && (g_findTick % 3 == 0)) few1n_findRbFallback();
     } @catch (...) {}
 }
 
@@ -974,7 +984,10 @@ static void few1n_applyCar(void) {
         if (unityAlive(g_rb)) {
             if (isNoClip && g_mRbSetDetect) { bool f=false; void* a[1]={&f}; i_runtime_invoke(g_mRbSetDetect, g_rb, a, NULL); g_noClipApplied=true; }
             else if (g_noClipApplied && g_mRbSetDetect) { bool t=true; void* a[1]={&t}; i_runtime_invoke(g_mRbSetDetect, g_rb, a, NULL); g_noClipApplied=false; }
-            if (isAntiGrav && g_mRbUseGrav) { bool f=false; void* a[1]={&f}; i_runtime_invoke(g_mRbUseGrav, g_rb, a, NULL); g_antiGravApplied=true; }
+            // Ucus/no-clip'te de yercekimini kapat -> hover sabit kalir, karsiya PURUZSUZ gider
+            // (yoksa yercekimi vs velocity.y=0 cakismasi titremeye sebep olur)
+            bool gravOff = isAntiGrav || isFlyEnabled || isNoClip;
+            if (gravOff && g_mRbUseGrav) { bool f=false; void* a[1]={&f}; i_runtime_invoke(g_mRbUseGrav, g_rb, a, NULL); g_antiGravApplied=true; }
             else if (g_antiGravApplied && g_mRbUseGrav) { bool t=true; void* a[1]={&t}; i_runtime_invoke(g_mRbUseGrav, g_rb, a, NULL); g_antiGravApplied=false; }
         }
         if (!unityAlive(g_carDrive)) return;   // araba oldu -> field yazma (crash korumasi)
@@ -1009,6 +1022,40 @@ static void few1n_applyCar(void) {
             *(unsigned char*)(d + 0x62) = 1;
             *(float*)(d + 0x64) = carSteerPower;
             *(float*)(d + 0x98) = carTopSpeed;
+        }
+        // ARAC BOYUTU: transform.localScale (CarDriveSystem+0x50 = _jfv Transform)
+        if (isCarSizeEnabled && g_mTransSetScale) {
+            void* tr = *(void**)(d + 0x50);
+            if (unityAlive(tr)) { Vec3 sc = { carSizeVal, carSizeVal, carSizeVal }; void* a[1]={&sc}; i_runtime_invoke(g_mTransSetScale, tr, a, NULL); }
+        }
+        // DRIFT: steerHelper + tractionControl = 0 (kaydir); kapatinca geri yukle
+        void* settings = *(void**)(d + 0x30);   // vehicleSettings (ScriptableObject)
+        if (unityAlive(settings)) {
+            uintptr_t st = (uintptr_t)settings;
+            if (isDriftMode) {
+                if (!g_driftSaved) { g_origSteerHelper = *(float*)(st+0x38); g_origTraction = *(float*)(st+0x3C); g_driftSaved = true; }
+                *(float*)(st+0x38) = 0.0f; *(float*)(st+0x3C) = 0.0f;
+            } else if (g_driftSaved) {
+                *(float*)(st+0x38) = g_origSteerHelper; *(float*)(st+0x3C) = g_origTraction; g_driftSaved = false;
+            }
+            // SUPER ARAC: torque/topSpeed/nitro orijinal*carpan (compound olmasin diye orijinalden)
+            if (isSuperCar) {
+                if (!g_superSaved) {
+                    g_origTorque = *(float*)(st+0x40); g_origTopS = *(float*)(st+0x50);
+                    g_origNitroTop = *(float*)(st+0x80); g_origNitroTrq = *(float*)(st+0x84);
+                    g_superSaved = true;
+                }
+                float m = superMult;
+                *(float*)(st+0x40) = g_origTorque    * m;   // fullTorqueOverAllWheels
+                *(float*)(st+0x50) = g_origTopS       * m;   // topSpeed
+                *(float*)(st+0x80) = g_origNitroTop   * m;   // nitroTopSpeed
+                *(float*)(st+0x84) = g_origNitroTrq   * m;   // nitroFullTorque
+                *(float*)(st+0x90) = 100.0f;                 // nitroRefillRate (bitmez)
+            } else if (g_superSaved) {
+                *(float*)(st+0x40) = g_origTorque; *(float*)(st+0x50) = g_origTopS;
+                *(float*)(st+0x80) = g_origNitroTop; *(float*)(st+0x84) = g_origNitroTrq;
+                g_superSaved = false;
+            }
         }
     } @catch (...) {}
 }
@@ -1412,7 +1459,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v27.4  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v28.0  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1473,6 +1520,11 @@ static void h_addMoney(void* self, int amount) {
     y = [self toggle:@"\U0001FAB6  Dusuk Yercekimi" sub:@"Dusus yavas, floaty" key:@"lowgrav" atY:y action:@selector(tapLowGrav)];
     y = [self toggle:@"\U0001F47B  No-Clip (Hayalet)" sub:@"Duvardan/araclardan gec (ucus ac!)" key:@"noclip" atY:y action:@selector(tapNoClip)];
     y = [self toggle:@"\U0001F319  Anti-Gravity (Ay modu)" sub:@"Yercekimi kapali, suzul" key:@"antigrav" atY:y action:@selector(tapAntiGrav)];
+    y = [self toggle:@"\U0001F3C6  Super Arac (Gelismis)" sub:@"Motor/hiz/nitro x kat, nitro bitmez" key:@"supercar" atY:y action:@selector(tapSuperCar)];
+    y = [self actionRow:@"✏️  Guc Carpani Ayarla (2-15x)" color:C_CYAN atY:y action:@selector(editSuperMult)];
+    y = [self toggle:@"\U0001F4A8  Drift Modu" sub:@"Tutunma kapali, kayarak don" key:@"drift" atY:y action:@selector(tapDrift)];
+    y = [self toggle:@"\U0001F4CF  Arac Boyutu (dev/minik)" sub:@"Arabayi buyut/kucult - herkes gorur" key:@"carsize" atY:y action:@selector(tapCarSize)];
+    y = [self actionRow:@"✏️  Boyut Ayarla (0.3 - 5x)" color:C_CYAN atY:y action:@selector(editCarSize)];
     y = [self toggle:@"\U0001F308  Arac Rengi (Disko/RGB)" sub:@"Araci renklendir (kendi ekranin)" key:@"carcolor" atY:y action:@selector(tapCarColor)];
     y = [self toggle:@"\U0001F504  RGB Dongu / Sabit Renk" sub:@"Acik=gokkusagi, Kapali=sabit" key:@"carcolorrainbow" atY:y action:@selector(tapCarColorRainbow)];
     y = [self actionRow:@"\U0001F3A8  Sabit Renk Sec" color:C_CYAN atY:y action:@selector(pickCarColor)];
@@ -1483,8 +1535,8 @@ static void h_addMoney(void* self, int amount) {
     y = [self actionRow:@"➡️  Ileri Isinlan (+50)" color:C_CYAN atY:y action:@selector(teleportForward)];
     y = [self actionRow:@"\U0001F4CD  Konum Kaydet" color:C_GOLD atY:y action:@selector(saveTeleportPos)];
     y = [self actionRow:@"\U0001F680  Kayitli Konuma Isinlan" color:C_GOLD atY:y action:@selector(teleportSaved)];
+    y = [self actionRow:@"\U0001F3AF  Oyuncuya Isinlan (yanina git)" color:C_ON atY:y action:@selector(teleportToPlayer)];
     y = [self toggle:@"\U0001F441  ESP Wallhack (kutu+cizgi)" sub:@"Diger araclar: kutu, mesafe, snapline" key:@"esp" atY:y action:@selector(tapESP)];
-    y = [self toggle:@"\U0001F3CE  Hiz Gostergesi HUD" sub:@"Ekranda anlik hizin" key:@"speedhud" atY:y action:@selector(tapSpeedHud)];
 
     y = [self header:@"\U0001F4AC  CHAT" atY:y];
     y = [self toggle:@"\U0001F3A8  Renkli Chat" sub:@"[FEW1N] prefix + cyan" key:@"colorchat" atY:y action:@selector(tapColorChat)];
@@ -1747,7 +1799,9 @@ static void h_addMoney(void* self, int amount) {
     [self setToggle:@"asciicolor" on:asciiColorCycle];
     [self setToggle:@"noclip"    on:isNoClip];
     [self setToggle:@"antigrav"  on:isAntiGrav];
-    [self setToggle:@"speedhud"  on:isSpeedHud];
+    [self setToggle:@"drift"     on:isDriftMode];
+    [self setToggle:@"carsize"   on:isCarSizeEnabled];
+    [self setToggle:@"supercar"  on:isSuperCar];
     [self setToggle:@"carcolor"  on:isCarColorEnabled];
     [self setToggle:@"carcolorrainbow" on:carColorRainbow];
     [self setToggle:@"lyrics"    on:isLyricsEnabled];
@@ -1844,15 +1898,9 @@ static void h_addMoney(void* self, int amount) {
     [self syncDrawOverlay];
     [self refreshUI];
 }
-- (void)tapSpeedHud {
-    isSpeedHud = !isSpeedHud;
-    saveBool(@"speedhud", isSpeedHud);
-    [self syncDrawOverlay];
-    [self refreshUI];
-}
-// ESP veya HUD acikken cizim overlay'i + timer'i yonet
+// ESP acikken cizim overlay'i + timer'i yonet
 - (void)syncDrawOverlay {
-    BOOL need = isEspEnabled || isSpeedHud;
+    BOOL need = isEspEnabled;
     if (need) {
         UIWindow *w = getKeyWindow();
         if (w && !self.espOverlay) {
@@ -1961,6 +2009,47 @@ static void h_addMoney(void* self, int amount) {
     }
 }
 
+// ===== YENI: OYUNCUYA ISINLAN (kendi arabani secilen aracin yanina tasi) =====
+// Pozisyon senkronlandigi icin herkes seni oraya isinlanirken gorur.
+- (void)teleportToPlayer {
+    if (!unityAlive(g_rb)) { FLog(@"Once arabana bin"); return; }
+    @try {
+        int cnt = 0;
+        void* arr = few1n_findAllCars(&cnt);
+        if (!arr || cnt <= 0) { FLog(@"Baska arac yok"); return; }
+        void** cars = (void**)((uintptr_t)arr + 0x20);
+        Vec3 myPos = {0,0,0}; rbGetPosIl(g_rb, &myPos);
+        NSMutableArray *rows = [NSMutableArray array];   // @[mesafe, x,y,z]
+        for (int i = 0; i < cnt; i++) {
+            void* car = cars[i]; if (!unityAlive(car)) continue;
+            void* rb = *(void**)((uintptr_t)car + 0x48);
+            if (!unityAlive(rb) || rb == g_rb) continue;
+            Vec3 p; rbGetPosIl(rb, &p);
+            float dx=p.x-myPos.x, dy=p.y-myPos.y, dz=p.z-myPos.z;
+            float dist = sqrtf(dx*dx+dy*dy+dz*dz);
+            [rows addObject:@[@(dist), @(p.x), @(p.y), @(p.z)]];
+        }
+        if (rows.count == 0) { FLog(@"Yakinda baska oyuncu yok"); return; }
+        [rows sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b){ return [a[0] compare:b[0]]; }];
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F680 Oyuncuya Isinlan"
+                                                                   message:[NSString stringWithFormat:@"%lu arac - yanina isinlan", (unsigned long)rows.count] preferredStyle:UIAlertControllerStyleAlert];
+        int idx = 1;
+        for (NSArray *r in rows) {
+            float x = [r[1] floatValue], yy = [r[2] floatValue], z = [r[3] floatValue], dist = [r[0] floatValue];
+            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"\U0001F697 Arac %d  (%.0fm)", idx++, dist]
+                style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+                if (!unityAlive(g_rb)) return;
+                Vec3 t = { x, yy + 2.0f, z - 4.0f };   // hafif ustunde ve arkasinda (icine girme)
+                rbSetPosIl(g_rb, &t);
+                Vec3 zero = {0,0,0}; rbSetVelIl(g_rb, &zero);
+                FLog([NSString stringWithFormat:@"Oyuncunun yanina isinlanildi (%.0fm)", dist]);
+            }]];
+        }
+        [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+        [self present:ac];
+    } @catch (...) { FLog(@"Isinlanma hatasi"); }
+}
+
 - (void)tick {
     enforceScale();
     few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
@@ -2019,6 +2108,33 @@ static void h_addMoney(void* self, int amount) {
 - (void)tapNitro     { isInfiniteNitroEnabled  = !isInfiniteNitroEnabled;  saveBool(@"nitro", isInfiniteNitroEnabled);      [self refreshUI]; }
 - (void)tapNoClip    { isNoClip   = !isNoClip;   saveBool(@"noclip", isNoClip);     [self refreshUI]; }
 - (void)tapAntiGrav  { isAntiGrav = !isAntiGrav; saveBool(@"antigrav", isAntiGrav); [self refreshUI]; }
+- (void)tapDrift     { isDriftMode = !isDriftMode; saveBool(@"drift", isDriftMode); [self refreshUI]; }
+- (void)tapSuperCar  { isSuperCar = !isSuperCar; saveBool(@"supercar", isSuperCar); [self refreshUI]; }
+- (void)editSuperMult {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3CE Guc Carpani"
+        message:@"Motor/hiz/nitro kac kat? (2-15)" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.keyboardType = UIKeyboardTypeDecimalPad; tf.text = [NSString stringWithFormat:@"%.0f", superMult]; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        float v = [ac.textFields.firstObject.text floatValue];
+        if (v >= 1.0f && v <= 15.0f) { superMult = v; saveFloat(@"superMult", v); isSuperCar = true; saveBool(@"supercar", true); g_superSaved = false; }
+        [self refreshUI];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+- (void)tapCarSize   { isCarSizeEnabled = !isCarSizeEnabled; saveBool(@"carsize", isCarSizeEnabled); [self refreshUI]; }
+- (void)editCarSize {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F4CF Arac Boyutu"
+        message:@"Kat (0.3 = minik, 1 = normal, 3 = dev)" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.keyboardType = UIKeyboardTypeDecimalPad; tf.text = [NSString stringWithFormat:@"%.1f", carSizeVal]; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        float v = [ac.textFields.firstObject.text floatValue];
+        if (v >= 0.3f && v <= 5.0f) { carSizeVal = v; saveFloat(@"carSize", v); isCarSizeEnabled = true; saveBool(@"carsize", true); }
+        [self refreshUI];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
 - (void)tapCarColor  { isCarColorEnabled = !isCarColorEnabled; saveBool(@"carcolor", isCarColorEnabled); if (isCarColorEnabled) few1n_refreshCarMats(); [self refreshUI]; }
 - (void)tapCarColorRainbow { carColorRainbow = !carColorRainbow; saveBool(@"carrainbow", carColorRainbow); [self refreshUI]; }
 - (void)pickCarColor {
@@ -3082,6 +3198,11 @@ static void restoreSettings(void) {
     isSpeedHud             = false;   // HUD da kapali baslar
     isNoClip               = loadBool(@"noclip", false);
     isAntiGrav             = loadBool(@"antigrav", false);
+    isDriftMode            = loadBool(@"drift", false);
+    isCarSizeEnabled       = false;   // boyut her aciliste kapali baslar
+    carSizeVal             = loadFloat(@"carSize", 1.0f);
+    isSuperCar             = loadBool(@"supercar", false);
+    superMult              = loadFloat(@"superMult", 3.0f);
     isCarColorEnabled      = false;   // renk her aciliste kapali (materyal onbellegi bos)
     carColorRainbow        = loadBool(@"carrainbow", true);
     g_carColor             = (Color4){ loadFloat(@"carR",1.0f), loadFloat(@"carG",0.0f), loadFloat(@"carB",0.0f), 1.0f };
@@ -3196,7 +3317,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v27.4 basladi, UnityFramework araniyor...");
+    FLog(@"v28.0 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
