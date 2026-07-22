@@ -227,6 +227,9 @@ static void* g_rbTypeObj = NULL;       // typeof(UnityEngine.Rigidbody)
 static void* g_mCompGetTransform = NULL; // Component.get_transform
 static void* g_mTransGetPos = NULL;    // Transform.get_position -> Vector3
 static void* g_mGetCompInParent = NULL; // Component.GetComponentInParent(Type,bool)
+// ==== PHOTONVIEW.IsMine = KESIN "benim arabam" ayrimi ====
+static void* g_photonViewType = NULL;  // typeof(Photon.Pun.PhotonView)
+static void* g_mIsMine = NULL;         // PhotonView.get_IsMine -> bool
 // ==== YENI HAVALI HACKLER ====
 static void* g_mRbSetDetect = NULL;    // Rigidbody.set_detectCollisions (no-clip)
 static void* g_mRbUseGrav = NULL;      // Rigidbody.set_useGravity (anti-grav)
@@ -470,6 +473,12 @@ static void few1n_initIl2cpp(void) {
             void* rc = i_class_from_name(img, "", "HR_UI_RoomListLine");
             if (!rc) rc = few1n_findClassByName(img, "HR_UI_RoomListLine");
             if (rc) { g_roomLineType = few1n_typeObjOf(rc); FLog([NSString stringWithFormat:@"RoomListLine tipi=%p", g_roomLineType]); }
+        }
+        if (!g_photonViewType) {
+            void* pv = i_class_from_name(img, "Photon.Pun", "PhotonView");
+            if (!pv) pv = few1n_findClassByName(img, "PhotonView");
+            if (pv) { g_photonViewType = few1n_typeObjOf(pv); g_mIsMine = i_class_get_method_from_name(pv, "get_IsMine", 0);
+                      FLog([NSString stringWithFormat:@"PhotonView tipi=%p IsMine=%p", g_photonViewType, g_mIsMine]); }
         }
         if (!g_roomOptionsClass) {
             void* roc = i_class_from_name(img, "Photon.Realtime", "RoomOptions");
@@ -973,29 +982,66 @@ static bool few1n_objPos(void* obj, Vec3* out) {
 }
 // YEDEK: CarDriveSystem bulunamazsa kameraya en yakin Rigidbody = oyuncunun araci.
 // Boylece zipla/isinlan/ucus g_rb'siz kalmaz (hiz/nitro yine CarDriveSystem ister).
-// SENIN arabani KESIN bul: CarDriveSystem'i OLAN Rigidbody = senin araban.
-// Uzak oyuncularin arabasinda CarDriveSystem YOK -> asla onlari almaz.
-// Boylece kontrol/hile HEP senin arabanda kalir.
-static void few1n_findRbFallback(void) {
-    if (!g_rbTypeObj || !g_mFindObjectsPlural || !g_mGetCompInParent || !g_carDriveTypeObj || !i_runtime_invoke) return;
+// KESIN: PhotonView.IsMine=true olan = SENIN araban. Pozisyonundan Rigidbody'ni bul.
+// Uzak oyuncularin PhotonView'i IsMine=false -> asla onlari almaz. Kontrol HEP sende.
+static bool few1n_findMyCarPhoton(void) {
+    if (!g_photonViewType || !g_mIsMine || !g_rbTypeObj || !g_mFindObjectsPlural || !i_runtime_invoke) return false;
     @try {
+        void* a[1]; a[0] = g_photonViewType;
+        void* pvArr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(pvArr)) return false;
+        int pvCnt = (int)(*(uintptr_t*)((uintptr_t)pvArr + 0x18));
+        if (pvCnt < 0 || pvCnt > 512) return false;
+        void** pvs = (void**)((uintptr_t)pvArr + 0x20);
+        Vec3 myPos = {0,0,0}; bool foundMine = false;
+        for (int i = 0; i < pvCnt; i++) {
+            void* pv = pvs[i]; if (!unityAlive(pv)) continue;
+            void* boxed = i_runtime_invoke(g_mIsMine, pv, NULL, NULL);   // bool -> boxed
+            bool mine = ptrOk(boxed) ? *(bool*)((uintptr_t)boxed + 0x10) : false;
+            if (mine && few1n_objPos(pv, &myPos)) { foundMine = true; break; }
+        }
+        if (!foundMine) return false;
+        void* b[1]; b[0] = g_rbTypeObj;
+        void* rbArr = i_runtime_invoke(g_mFindObjectsPlural, NULL, b, NULL);
+        if (!ptrOk(rbArr)) return false;
+        int rbCnt = (int)(*(uintptr_t*)((uintptr_t)rbArr + 0x18));
+        if (rbCnt < 0 || rbCnt > 1024) return false;
+        void** rbs = (void**)((uintptr_t)rbArr + 0x20);
+        void* best = NULL; float bestD = 1e18f;
+        for (int i = 0; i < rbCnt; i++) {
+            void* rb = rbs[i]; if (!unityAlive(rb)) continue;
+            Vec3 p; rbGetPosIl(rb, &p);
+            float dx=p.x-myPos.x,dy=p.y-myPos.y,dz=p.z-myPos.z; float d=dx*dx+dy*dy+dz*dz;
+            if (d < bestD) { bestD = d; best = rb; }
+        }
+        if (ptrOk(best) && bestD < 100.0f) { g_rb = best; return true; }   // 10m icinde eslesti
+    } @catch (...) {}
+    return false;
+}
+
+// Kameraya en yakin (MESAFE SINIRLI) Rigidbody = SENIN araban (chase cam ~5-10m).
+// CarDriveSystem bu oyunda il2cpp'den bulunamiyor, o yuzden bu yontem kullaniliyor.
+static void few1n_findRbFallback(void) {
+    if (!g_rbTypeObj || !g_mFindObjectsPlural || !g_mCamGetMain || !i_runtime_invoke) return;
+    @try {
+        void* cam = i_runtime_invoke(g_mCamGetMain, NULL, NULL, NULL);
+        if (!ptrOk(cam)) return;
+        Vec3 camPos; if (!few1n_objPos(cam, &camPos)) return;
         void* a[1]; a[0] = g_rbTypeObj;
         void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
         if (!ptrOk(arr)) return;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt < 0 || cnt > 1024) return;
         void** rbs = (void**)((uintptr_t)arr + 0x20);
+        void* best = NULL; float bestD = 1e18f;
         for (int i = 0; i < cnt; i++) {
             void* rb = rbs[i]; if (!unityAlive(rb)) continue;
-            bool inc = true; void* pa[2]; pa[0] = g_carDriveTypeObj; pa[1] = &inc;
-            void* cd = i_runtime_invoke(g_mGetCompInParent, rb, pa, NULL);
-            if (unityAlive(cd)) {   // bu Rigidbody CarDriveSystem'e sahip = SENIN araban
-                g_rb = rb; g_carDrive = cd;
-                void* inp = *(void**)((uintptr_t)cd + 0x20);   // CarPlayerInput
-                if (unityAlive(inp)) { void* nos = *(void**)((uintptr_t)inp + 0x28); if (ptrOk(nos)) g_carNitro = nos; }
-                return;
-            }
+            Vec3 p; rbGetPosIl(rb, &p);
+            float dx=p.x-camPos.x, dy=p.y-camPos.y, dz=p.z-camPos.z;
+            float d = dx*dx+dy*dy+dz*dz;
+            if (d < bestD) { bestD = d; best = rb; }
         }
+        if (ptrOk(best) && bestD < 324.0f) g_rb = best;   // 18m sinir = senin araban
     } @catch (...) {}
 }
 
@@ -1040,10 +1086,10 @@ static void few1n_findCar(void) {
                 if (ptrOk(rb)) g_rb = rb;
             }
         }
-        // SON CARE: g_rb hala yoksa kameraya en yakin (MESAFE SINIRLI = SENIN araban) araci al.
-        // Boylece CarPlayerInput/CarDriveSystem bulunamasa da zipla/ucus calisir,
-        // ama 18m sinir sayesinde baska oyuncunun arabasini almaz.
-        if (!unityAlive(g_rb) && (g_findTick % 3 == 0)) few1n_findRbFallback();
+        // KESIN YOL: PhotonView.IsMine ile senin arabani bul. Olmazsa kamera-yedegi.
+        if (!unityAlive(g_rb) && (g_findTick % 3 == 0)) {
+            if (!few1n_findMyCarPhoton()) few1n_findRbFallback();
+        }
         // g_rb VAR ama g_carDrive YOK ise: Rigidbody'nin GameObject'inden CarDriveSystem'i al.
         // Boylece hiz/nitro/super arac/drift/selektor/boyut da calisir (hepsi g_carDrive ister).
         if (unityAlive(g_rb) && !unityAlive(g_carDrive) && g_mGetCompInParent && g_carDriveTypeObj) {
@@ -1571,7 +1617,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v29.1  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v29.2  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -3628,7 +3674,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v29.1 basladi, UnityFramework araniyor...");
+    FLog(@"v29.2 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
