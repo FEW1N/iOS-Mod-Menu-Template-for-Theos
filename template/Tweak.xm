@@ -216,12 +216,6 @@ static void* g_mTmpSetText = NULL;     // TMP_Text.set_text(string)
 static void* g_plateTypeObj = NULL;    // typeof(PlateVariant)
 // ==== SIFRE KIRICI (RoomListLine.password client'ta) ====
 static void* g_roomLineType = NULL;    // typeof(HR_UI_RoomListLine)
-// ==== SELEKTOR (arabanin Light bilesenlerini hizli ac/kapat) ====
-static void* g_lightType = NULL;       // typeof(UnityEngine.Light)
-static void* g_mSetEnabled = NULL;     // Behaviour.set_enabled(bool)
-static void* g_carLights[48]; static int g_carLightCount = 0;
-static bool  isSelektor = false;
-static int   g_selektorTick = 0;
 // ==== RIGIDBODY YEDEK YOLU (CarDriveSystem bulunamazsa kameraya en yakin arac) ====
 static void* g_rbTypeObj = NULL;       // typeof(UnityEngine.Rigidbody)
 static void* g_mCompGetTransform = NULL; // Component.get_transform
@@ -229,7 +223,11 @@ static void* g_mTransGetPos = NULL;    // Transform.get_position -> Vector3
 static void* g_mGetCompInParent = NULL; // Component.GetComponentInParent(Type,bool)
 // ==== PHOTONVIEW.IsMine = KESIN "benim arabam" ayrimi ====
 static void* g_photonViewType = NULL;  // typeof(Photon.Pun.PhotonView)
-static void* g_mIsMine = NULL;         // PhotonView.get_IsMine -> bool
+static void* g_mIsMine = NULL;         // PhotonView.get_IsMine -> bool (KULLANILMIYOR - cokuyordu)
+static void* g_fIsMine = NULL;         // PhotonView.<IsMine>k__BackingField (FieldInfo)
+static int   g_isMineOff = 0;          // IsMine byte offset @0x68 (dogrudan okuma - cokme YOK)
+static void* g_fOwner = NULL;          // PhotonView.<Owner>k__BackingField (FieldInfo)
+static int   g_pvOwnerOff = 0;         // Owner (Player*) byte offset @0x80 (isim icin)
 // ==== YENI HAVALI HACKLER ====
 static void* g_mRbSetDetect = NULL;    // Rigidbody.set_detectCollisions (no-clip)
 static void* g_mRbUseGrav = NULL;      // Rigidbody.set_useGravity (anti-grav)
@@ -246,26 +244,10 @@ static Color4 g_carColor = {1.0f, 0.0f, 0.0f, 1.0f};   // sabit renk (kirmizi)
 static void* g_carMats[96]; static int g_carMatCount = 0;  // materyal onbellegi
 static bool  isNoClip = false;         // hayalet mod (duvardan gec)
 static bool  isAntiGrav = false;       // yercekimi kapali (ay modu)
-// ==== ARAC BOYUTU + DRIFT ====
+// ==== ARAC BOYUTU (g_rb transformunu olcekle) ====
 static void* g_mTransSetScale = NULL;  // Transform.set_localScale(Vector3)
 static bool  isCarSizeEnabled = false;
-static float carSizeVal = 1.0f;        // 0.3 - 3.0
-static bool  isDriftMode = false;
-static bool  g_driftSaved = false;
-static float g_origSteerHelper = 0, g_origTraction = 0;
-// ==== HEDEF OYUNCU TROLL (secilen oyuncuya efekt) ====
-static void* g_targetCar = NULL;   // hedef CarDriveSystem
-static void* g_targetRb = NULL;    // hedef Rigidbody
-static bool  isTargetFly = false;  // hedefi surekli yukselt
-static bool  isTargetFreeze = false; // hedefi dondur
-static bool  isFreezeAll = false;  // odadaki herkesi dondur
-static bool  isPullHold = false;   // herkesi surekli yanimda tut (senkronu yener)
-static void* g_trollCars[64]; static int g_trollN = 0;   // troll onbellegi (tick'te doldurulur)
-// ==== SUPER ARAC (CarDriveSettings gelismis ayar) ====
-static bool  isSuperCar = false;
-static float superMult = 3.0f;         // guc carpani
-static bool  g_superSaved = false;
-static float g_origTorque = 0, g_origTopS = 0, g_origNitroTop = 0, g_origNitroTrq = 0;
+static float carSizeVal = 1.0f;        // 0.3 - 5.0
 static bool  isSpeedHud = false;       // hiz gostergesi HUD
 static bool  g_noClipApplied = false;  // durum takibi (surekli set etmemek icin)
 static bool  g_antiGravApplied = false;
@@ -275,6 +257,7 @@ static float g_hudSpeed = 0, g_hudRPM = 0; static int g_hudGear = 0;
 // metodlar: SelectCar / PositiveCarIndex / NegativeCarIndex / BuyCar
 static void* (*i_class_get_field_from_name)(void*, const char*) = NULL;
 static void  (*i_field_static_get_value)(void*, void*) = NULL;
+static size_t (*i_field_get_offset)(void*) = NULL;
 static void* g_mmhClass   = NULL;   // HR_MainMenuHandler Il2CppClass*
 static void* g_mmhField   = NULL;   // 'iiz' static field
 static void* g_mSelectCar = NULL;
@@ -334,6 +317,7 @@ static void few1n_initIl2cpp(void) {
     i_object_new                = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_object_new");
     i_class_get_field_from_name = (void*(*)(void*,const char*))dlsym(RTLD_DEFAULT, "il2cpp_class_get_field_from_name");
     i_field_static_get_value    = (void(*)(void*,void*))dlsym(RTLD_DEFAULT, "il2cpp_field_static_get_value");
+    i_field_get_offset          = (size_t(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_field_get_offset");
     i_class_get_type            = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_class_get_type");
     i_type_get_object           = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_type_get_object");
     i_image_get_class_count     = (size_t(*)(const void*))dlsym(RTLD_DEFAULT, "il2cpp_image_get_class_count");
@@ -443,14 +427,6 @@ static void few1n_initIl2cpp(void) {
             void* mc = i_class_from_name(img, "UnityEngine", "Material");
             if (mc) g_mMatSetColor = i_class_get_method_from_name(mc, "set_color", 1);
         }
-        if (!g_lightType) {
-            void* lc = i_class_from_name(img, "UnityEngine", "Light");
-            if (lc) g_lightType = few1n_typeObjOf(lc);
-        }
-        if (!g_mSetEnabled) {
-            void* bc = i_class_from_name(img, "UnityEngine", "Behaviour");
-            if (bc) g_mSetEnabled = i_class_get_method_from_name(bc, "set_enabled", 1);
-        }
         if (!g_mTransGetPos) {
             void* tr = i_class_from_name(img, "UnityEngine", "Transform");
             if (tr) { g_mTransGetPos = i_class_get_method_from_name(tr, "get_position", 0);
@@ -477,8 +453,15 @@ static void few1n_initIl2cpp(void) {
         if (!g_photonViewType) {
             void* pv = i_class_from_name(img, "Photon.Pun", "PhotonView");
             if (!pv) pv = few1n_findClassByName(img, "PhotonView");
-            if (pv) { g_photonViewType = few1n_typeObjOf(pv); g_mIsMine = i_class_get_method_from_name(pv, "get_IsMine", 0);
-                      FLog([NSString stringWithFormat:@"PhotonView tipi=%p IsMine=%p", g_photonViewType, g_mIsMine]); }
+            if (pv) { g_photonViewType = few1n_typeObjOf(pv);
+                      // Field-read: metod cagirmadan alanlari dogrudan hafizadan oku (cokme YOK)
+                      if (i_class_get_field_from_name) {
+                          g_fIsMine = i_class_get_field_from_name(pv, "<IsMine>k__BackingField");
+                          g_fOwner  = i_class_get_field_from_name(pv, "<Owner>k__BackingField");
+                      }
+                      if (g_fIsMine && i_field_get_offset) g_isMineOff  = (int)i_field_get_offset(g_fIsMine);
+                      if (g_fOwner  && i_field_get_offset) g_pvOwnerOff = (int)i_field_get_offset(g_fOwner);
+                      FLog([NSString stringWithFormat:@"PhotonView tipi=%p IsMineOff=%d OwnerOff=%d", g_photonViewType, g_isMineOff, g_pvOwnerOff]); }
         }
         if (!g_roomOptionsClass) {
             void* roc = i_class_from_name(img, "Photon.Realtime", "RoomOptions");
@@ -985,7 +968,9 @@ static bool few1n_objPos(void* obj, Vec3* out) {
 // KESIN: PhotonView.IsMine=true olan = SENIN araban. Pozisyonundan Rigidbody'ni bul.
 // Uzak oyuncularin PhotonView'i IsMine=false -> asla onlari almaz. Kontrol HEP sende.
 static bool few1n_findMyCarPhoton(void) {
-    if (!g_photonViewType || !g_mIsMine || !g_rbTypeObj || !g_mFindObjectsPlural || !i_runtime_invoke) return false;
+    // Field-read yontemi: get_IsMine METODUNU CAGIRMAZ (o cokuyordu). _IsMine byte'ini
+    // dogrudan hafizadan okur -> oyun kodu calismaz -> asla cokmez.
+    if (!g_photonViewType || g_isMineOff <= 0 || !g_rbTypeObj || !g_mFindObjectsPlural || !i_runtime_invoke) return false;
     @try {
         void* a[1]; a[0] = g_photonViewType;
         void* pvArr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
@@ -996,8 +981,7 @@ static bool few1n_findMyCarPhoton(void) {
         Vec3 myPos = {0,0,0}; bool foundMine = false;
         for (int i = 0; i < pvCnt; i++) {
             void* pv = pvs[i]; if (!unityAlive(pv)) continue;
-            void* boxed = i_runtime_invoke(g_mIsMine, pv, NULL, NULL);   // bool -> boxed
-            bool mine = ptrOk(boxed) ? *(bool*)((uintptr_t)boxed + 0x10) : false;
+            bool mine = *(bool*)((uintptr_t)pv + g_isMineOff);   // DOGRUDAN oku, metod yok
             if (mine && few1n_objPos(pv, &myPos)) { foundMine = true; break; }
         }
         if (!foundMine) return false;
@@ -1052,13 +1036,11 @@ static void few1n_findCar(void) {
     g_findTick++;
     @try {
         // Onbellek gecerliligi: yok edilen nesneyi temizle (crash korumasi)
-        if (g_carDrive && !unityAlive(g_carDrive)) { g_carDrive = NULL; g_origTop = 0.0f; g_carMatCount = 0; g_carLightCount = 0; }
+        if (g_carDrive && !unityAlive(g_carDrive)) { g_carDrive = NULL; g_origTop = 0.0f; }
         if (g_carNitro && !unityAlive(g_carNitro))   g_carNitro = NULL;
         // KRITIK: yedekten gelen g_rb, o obje olunce temizlenmiyordu -> stale pointer crash.
         // Her tick g_rb'yi dogrula, oldayse temizle (yedek yol yeniden bulur).
         if (g_rb && !unityAlive(g_rb)) g_rb = NULL;
-        // Hedef oyuncu odadan cikip arabasi yok olursa temizle (stale crash korumasi)
-        if (g_targetRb && !unityAlive(g_targetRb)) { g_targetRb = NULL; g_targetCar = NULL; }
 
         // ===== BIRINCIL: CarPlayerInput = SADECE SENIN araban =====
         // Uzak oyuncularin arabasinda bu bilesen YOK. Her odada seninkini kesin verir.
@@ -1086,7 +1068,7 @@ static void few1n_findCar(void) {
                 if (ptrOk(rb)) g_rb = rb;
             }
         }
-        // KESIN YOL: PhotonView.IsMine ile senin arabani bul. Olmazsa kamera-yedegi.
+        // KESIN: PhotonView._IsMine field-read (cokmez). Olmazsa kamera-yedegi (18m).
         if (!unityAlive(g_rb) && (g_findTick % 3 == 0)) {
             if (!few1n_findMyCarPhoton()) few1n_findRbFallback();
         }
@@ -1121,6 +1103,11 @@ static void few1n_applyCar(void) {
             bool gravOff = isAntiGrav || isFlyEnabled || isNoClip;
             if (gravOff && g_mRbUseGrav) { bool f=false; void* a[1]={&f}; i_runtime_invoke(g_mRbUseGrav, g_rb, a, NULL); g_antiGravApplied=true; }
             else if (g_antiGravApplied && g_mRbUseGrav) { bool t=true; void* a[1]={&t}; i_runtime_invoke(g_mRbUseGrav, g_rb, a, NULL); g_antiGravApplied=false; }
+            // ARAC BOYUTU: g_rb'nin transformunu olcekle - CarDriveSystem GEREKMEZ (g_rb yeterli)
+            if (isCarSizeEnabled && g_mTransSetScale && g_mCompGetTransform) {
+                void* tr = i_runtime_invoke(g_mCompGetTransform, g_rb, NULL, NULL);
+                if (unityAlive(tr)) { Vec3 sc = { carSizeVal, carSizeVal, carSizeVal }; void* a[1]={&sc}; i_runtime_invoke(g_mTransSetScale, tr, a, NULL); }
+            }
         }
         if (!unityAlive(g_carDrive)) return;   // araba oldu -> field yazma (crash korumasi)
         uintptr_t d = (uintptr_t)g_carDrive;
@@ -1154,40 +1141,6 @@ static void few1n_applyCar(void) {
             *(unsigned char*)(d + 0x62) = 1;
             *(float*)(d + 0x64) = carSteerPower;
             *(float*)(d + 0x98) = carTopSpeed;
-        }
-        // ARAC BOYUTU: transform.localScale (CarDriveSystem+0x50 = _jfv Transform)
-        if (isCarSizeEnabled && g_mTransSetScale) {
-            void* tr = *(void**)(d + 0x50);
-            if (unityAlive(tr)) { Vec3 sc = { carSizeVal, carSizeVal, carSizeVal }; void* a[1]={&sc}; i_runtime_invoke(g_mTransSetScale, tr, a, NULL); }
-        }
-        // DRIFT: steerHelper + tractionControl = 0 (kaydir); kapatinca geri yukle
-        void* settings = *(void**)(d + 0x30);   // vehicleSettings (ScriptableObject)
-        if (unityAlive(settings)) {
-            uintptr_t st = (uintptr_t)settings;
-            if (isDriftMode) {
-                if (!g_driftSaved) { g_origSteerHelper = *(float*)(st+0x38); g_origTraction = *(float*)(st+0x3C); g_driftSaved = true; }
-                *(float*)(st+0x38) = 0.0f; *(float*)(st+0x3C) = 0.0f;
-            } else if (g_driftSaved) {
-                *(float*)(st+0x38) = g_origSteerHelper; *(float*)(st+0x3C) = g_origTraction; g_driftSaved = false;
-            }
-            // SUPER ARAC: torque/topSpeed/nitro orijinal*carpan (compound olmasin diye orijinalden)
-            if (isSuperCar) {
-                if (!g_superSaved) {
-                    g_origTorque = *(float*)(st+0x40); g_origTopS = *(float*)(st+0x50);
-                    g_origNitroTop = *(float*)(st+0x80); g_origNitroTrq = *(float*)(st+0x84);
-                    g_superSaved = true;
-                }
-                float m = superMult;
-                *(float*)(st+0x40) = g_origTorque    * m;   // fullTorqueOverAllWheels
-                *(float*)(st+0x50) = g_origTopS       * m;   // topSpeed
-                *(float*)(st+0x80) = g_origNitroTop   * m;   // nitroTopSpeed
-                *(float*)(st+0x84) = g_origNitroTrq   * m;   // nitroFullTorque
-                *(float*)(st+0x90) = 100.0f;                 // nitroRefillRate (bitmez)
-            } else if (g_superSaved) {
-                *(float*)(st+0x40) = g_origTorque; *(float*)(st+0x50) = g_origTopS;
-                *(float*)(st+0x80) = g_origNitroTop; *(float*)(st+0x84) = g_origNitroTrq;
-                g_superSaved = false;
-            }
         }
     } @catch (...) {}
 }
@@ -1243,11 +1196,11 @@ static Color4 hueToRGB(float h) {   // h 0..1 arasi -> gokkusagi
 // Arabanin tum Renderer materyallerini onbellege al
 static void few1n_refreshCarMats(void) {
     g_carMatCount = 0;
-    if (!ptrOk(g_carDrive) || !g_mGetCompsChild || !g_rendererType || !g_mRendGetMat || !i_runtime_invoke) return;
+    if (!ptrOk(g_rb) || !g_mGetCompsChild || !g_rendererType || !g_mRendGetMat || !i_runtime_invoke) return;
     @try {
         bool inc = true;
         void* a[2]; a[0] = g_rendererType; a[1] = &inc;
-        void* arr = i_runtime_invoke(g_mGetCompsChild, g_carDrive, a, NULL);
+        void* arr = i_runtime_invoke(g_mGetCompsChild, g_rb, a, NULL);   // g_rb'den (carDrive bulunamiyor)
         if (!ptrOk(arr)) return;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt < 0 || cnt > 96) return;
@@ -1259,37 +1212,12 @@ static void few1n_refreshCarMats(void) {
         }
     } @catch (...) {}
 }
-// ===== SELEKTOR: arabanin Light bilesenlerini bul + hizli ac/kapat =====
-static void few1n_refreshCarLights(void) {
-    g_carLightCount = 0;
-    if (!ptrOk(g_carDrive) || !g_mGetCompsChild || !g_lightType || !i_runtime_invoke) return;
-    @try {
-        bool inc = true;
-        void* a[2]; a[0] = g_lightType; a[1] = &inc;
-        void* arr = i_runtime_invoke(g_mGetCompsChild, g_carDrive, a, NULL);
-        if (!ptrOk(arr)) return;
-        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-        if (cnt < 0 || cnt > 48) return;
-        void** ls = (void**)((uintptr_t)arr + 0x20);
-        for (int i = 0; i < cnt && g_carLightCount < 48; i++) if (ptrOk(ls[i])) g_carLights[g_carLightCount++] = ls[i];
-    } @catch (...) {}
-}
-static void few1n_applySelektor(void) {
-    if (!isSelektor || !g_mSetEnabled || g_carLightCount == 0 || !i_runtime_invoke) return;
-    @try {
-        g_selektorTick++;
-        bool on = ((g_selektorTick / 5) % 2) == 0;   // ~5 frame ac, 5 frame kapa (hizli cakma)
-        void* a[1]; a[0] = &on;
-        for (int i = 0; i < g_carLightCount; i++)
-            if (unityAlive(g_carLights[i])) i_runtime_invoke(g_mSetEnabled, g_carLights[i], a, NULL);
-    } @catch (...) {}
-}
 
 // Onbellekteki materyallere rengi uygula (her frame - ucuz)
 // KRITIK: araba yok edilince materyaller de gecersizlesir -> unityAlive kontrolu (crash korumasi)
 static void few1n_applyColor(void) {
     if (!isCarColorEnabled || !g_mMatSetColor || g_carMatCount == 0 || !i_runtime_invoke) return;
-    if (!unityAlive(g_carDrive)) { g_carMatCount = 0; return; }   // araba oldu -> materyaller cop, boyama
+    if (!unityAlive(g_rb)) { g_carMatCount = 0; return; }   // araba oldu -> materyaller cop
     @try {
         Color4 c;
         if (carColorRainbow) { g_carHue += 0.012f; if (g_carHue >= 1.0f) g_carHue -= 1.0f; c = hueToRGB(g_carHue); }
@@ -1617,7 +1545,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v29.2  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v29.5  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1675,10 +1603,6 @@ static void h_addMoney(void* self, int amount) {
     y = [self toggle:@"\U0001FAB6  Dusuk Yercekimi" sub:@"Dusus yavas, floaty" key:@"lowgrav" atY:y action:@selector(tapLowGrav)];
     y = [self toggle:@"\U0001F47B  No-Clip (Hayalet)" sub:@"Duvardan/araclardan gec (ucus ac!)" key:@"noclip" atY:y action:@selector(tapNoClip)];
     y = [self toggle:@"\U0001F319  Anti-Gravity (Ay modu)" sub:@"Yercekimi kapali, suzul" key:@"antigrav" atY:y action:@selector(tapAntiGrav)];
-    y = [self toggle:@"\U0001F3C6  Super Arac (Gelismis)" sub:@"Motor/hiz/nitro x kat, nitro bitmez" key:@"supercar" atY:y action:@selector(tapSuperCar)];
-    y = [self actionRow:@"✏️  Guc Carpani Ayarla (2-15x)" color:C_CYAN atY:y action:@selector(editSuperMult)];
-    y = [self toggle:@"\U0001F4A8  Drift Modu" sub:@"Tutunma kapali, kayarak don" key:@"drift" atY:y action:@selector(tapDrift)];
-    y = [self toggle:@"\U0001F4A1  Selektor (isik cakma)" sub:@"Arabanin isiklarini hizli ac/kapat" key:@"selektor" atY:y action:@selector(tapSelektor)];
     y = [self actionRow:@"\U0001F53C  ZIPLA (bas)" color:C_ON atY:y action:@selector(jumpTap)];
     y = [self actionRow:@"\U0001F680  Hiz Patlamasi (boost)" color:C_ON atY:y action:@selector(boostTap)];
     y = [self actionRow:@"\U0001F9CA  Araci Dondur (anlik dur)" color:C_CYAN atY:y action:@selector(freezeTap)];
@@ -1687,17 +1611,6 @@ static void h_addMoney(void* self, int amount) {
     y = [self actionRow:@"\U0001F4CD  Konum Kaydet" color:C_GOLD atY:y action:@selector(saveTeleportPos)];
     y = [self actionRow:@"\U0001F680  Kayitli Konuma Isinlan" color:C_GOLD atY:y action:@selector(teleportSaved)];
     y = [self actionRow:@"\U0001F3AF  Oyuncuya Isinlan (yanina git)" color:C_ON atY:y action:@selector(teleportToPlayer)];
-    y = [self actionRow:@"\U0001F680  Oyuncuyu Firlat (troll)" color:C_RED atY:y action:@selector(launchPlayer)];
-    y = [self actionRow:@"\U0001F4A5  ODADAKI TUM ARACLARI ZIPLAT" color:C_RED atY:y action:@selector(launchAllCars)];
-    y = [self actionRow:@"\U0001F9F2  Tum Oyunculari Bana Cek" color:C_RED atY:y action:@selector(pullAllPlayers)];
-    y = [self toggle:@"\U0001F9CA  Tum Oyunculari Dondur" sub:@"Odadaki herkesi yerinde tut" key:@"freezeall" atY:y action:@selector(tapFreezeAll)];
-    y = [self toggle:@"\U0001F9F2  Herkesi Yanimda Tut" sub:@"Surekli yaninda tut (geri gitmez)" key:@"pullhold" atY:y action:@selector(tapPullHold)];
-    y = [self header:@"\U0001F3AF  HEDEF OYUNCU (troll)" atY:y];
-    y = [self actionRow:@"\U0001F3AF  Hedef Oyuncu Sec" color:C_GOLD atY:y action:@selector(selectTarget)];
-    y = [self toggle:@"\U0001F6F8  Hedefi Ucur" sub:@"Secili oyuncuyu surekli yukselt" key:@"tgtfly" atY:y action:@selector(tapTargetFly)];
-    y = [self toggle:@"\U0001F9CA  Hedefi Dondur" sub:@"Secili oyuncuyu yerinde dondur" key:@"tgtfreeze" atY:y action:@selector(tapTargetFreeze)];
-    y = [self actionRow:@"\U0001F680  Hedefi Firlat" color:C_RED atY:y action:@selector(launchTarget)];
-    y = [self actionRow:@"\U0001F9F2  Hedefi Bana Cek" color:C_GOLD atY:y action:@selector(pullTarget)];
 
     y = [self header:@"\U0001F4AC  CHAT" atY:y];
     y = [self toggle:@"\U0001F3A8  Renkli Chat" sub:@"[FEW1N] prefix + cyan" key:@"colorchat" atY:y action:@selector(tapColorChat)];
@@ -1954,14 +1867,7 @@ static void h_addMoney(void* self, int amount) {
     [self setToggle:@"asciicolor" on:asciiColorCycle];
     [self setToggle:@"noclip"    on:isNoClip];
     [self setToggle:@"antigrav"  on:isAntiGrav];
-    [self setToggle:@"drift"     on:isDriftMode];
-    [self setToggle:@"selektor"  on:isSelektor];
     [self setToggle:@"carsize"   on:isCarSizeEnabled];
-    [self setToggle:@"supercar"  on:isSuperCar];
-    [self setToggle:@"tgtfly"    on:isTargetFly];
-    [self setToggle:@"tgtfreeze" on:isTargetFreeze];
-    [self setToggle:@"freezeall" on:isFreezeAll];
-    [self setToggle:@"pullhold"  on:isPullHold];
     [self setToggle:@"carcolor"  on:isCarColorEnabled];
     [self setToggle:@"carcolorrainbow" on:carColorRainbow];
     [self setToggle:@"lyrics"    on:isLyricsEnabled];
@@ -1999,7 +1905,6 @@ static void h_addMoney(void* self, int amount) {
     enforceScale();          // her ekran frame'inde timeScale'i zorla
     few1n_applyCar();        // onbellekten nitro/hiz/panel uygula (arama YAPMAZ - ucuz)
     few1n_applyColor();      // arac rengini uygula (onbellek materyaller - ucuz)
-    few1n_applySelektor();   // selektor: isiklari hizli ac/kapat
     // Ucus (hover) ve dusuk yercekimi - Rigidbody dikey hizini ayarla
     if ((isFlyEnabled || isLowGravEnabled || isNoClip) && unityAlive(g_rb)) {
         @try {
@@ -2011,28 +1916,6 @@ static void h_addMoney(void* self, int amount) {
                 v.y *= 0.25f;                     // dususu yavaslat (floaty)
             }
             rbSetVelIl(g_rb, &v);
-        } @catch (...) {}
-    }
-    // TUM OYUNCULAR: her frame uygula (ag senkronunu yener -> geri gitmez/durur)
-    if ((isFreezeAll || isPullHold) && g_trollN > 0) {
-        @try {
-            Vec3 myPos = {0,0,0}; BOOL haveMe = unityAlive(g_rb); if (haveMe) rbGetPosIl(g_rb, &myPos);
-            for (int i = 0; i < g_trollN; i++) {
-                void* rb = g_trollCars[i]; if (!unityAlive(rb)) continue;
-                if (isPullHold && haveMe) {
-                    float ang = (float)i * 1.3f;
-                    Vec3 t = { myPos.x + cosf(ang)*6.0f, myPos.y + 1.5f, myPos.z + sinf(ang)*6.0f };
-                    rbSetPosIl(rb, &t);
-                }
-                Vec3 z = {0,0,0}; rbSetVelIl(rb, &z);   // hem freeze hem pull'da hizi sifirla
-            }
-        } @catch (...) {}
-    }
-    // HEDEF OYUNCU troll (secilen oyuncuya surekli efekt)
-    if ((isTargetFly || isTargetFreeze) && unityAlive(g_targetRb)) {
-        @try {
-            if (isTargetFreeze) { Vec3 z = {0,0,0}; rbSetVelIl(g_targetRb, &z); }
-            else if (isTargetFly) { Vec3 v = {0,0,0}; rbGetVelIl(g_targetRb, &v); if (v.y < 6.0f) v.y = 6.0f; rbSetVelIl(g_targetRb, &v); }
         } @catch (...) {}
     }
 }
@@ -2192,43 +2075,6 @@ static void h_addMoney(void* self, int amount) {
     }
 }
 
-// ===== YENI: OYUNCUYA ISINLAN (kendi arabani secilen aracin yanina tasi) =====
-// Pozisyon senkronlandigi icin herkes seni oraya isinlanirken gorur.
-// ===== YENI: OYUNCUYU FIRLAT (secilen oyuncunun arabasini havaya firlat) =====
-// NOT: sahibi olmadigin icin cogunlukla SENIN ekraninda gozukur (troll efekti).
-- (void)launchPlayer {
-    @try {
-        void* rbs[48]; int n = few1n_collectCars(rbs, 48);
-        if (n <= 0) { FLog(@"Baska arac yok (yarista dene)"); return; }
-        Vec3 myPos = {0,0,0}; BOOL haveMe = unityAlive(g_rb); if (haveMe) rbGetPosIl(g_rb, &myPos);
-        NSMutableArray *rows = [NSMutableArray array];   // @[mesafe, rbPtrNum]
-        for (int i = 0; i < n; i++) {
-            void* rb = rbs[i]; if (!unityAlive(rb) || rb == g_rb) continue;
-            float dist = 0;
-            if (haveMe) { Vec3 p; rbGetPosIl(rb, &p); float dx=p.x-myPos.x,dy=p.y-myPos.y,dz=p.z-myPos.z; dist=sqrtf(dx*dx+dy*dy+dz*dz); }
-            [rows addObject:@[@(dist), @((uintptr_t)rb)]];
-        }
-        if (rows.count == 0) { FLog(@"Yakinda baska oyuncu yok"); return; }
-        [rows sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b){ return [a[0] compare:b[0]]; }];
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F680 Oyuncuyu Firlat"
-                                                                   message:[NSString stringWithFormat:@"%lu arac - havaya firlat (troll)", (unsigned long)rows.count] preferredStyle:UIAlertControllerStyleAlert];
-        int idx = 1;
-        for (NSArray *r in rows) {
-            uintptr_t rbv = (uintptr_t)[r[1] unsignedLongLongValue]; float dist = [r[0] floatValue];
-            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"\U0001F697 Arac %d  (%.0fm) FIRLAT", idx++, dist]
-                style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
-                void* rb = (void*)rbv;
-                if (!unityAlive(rb)) { FLog(@"Arac artik yok"); return; }
-                Vec3 v; rbGetVelIl(rb, &v); v.y = 45.0f;   // havaya firlat
-                rbSetVelIl(rb, &v);
-                FLog(@"Oyuncu firlatildi (kendi ekraninda gozukur)");
-            }]];
-        }
-        [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
-        [self present:ac];
-    } @catch (...) { FLog(@"Firlatma hatasi"); }
-}
-
 // ===== SIFRE KIRICI: odalarin sifresini oku ve goster (il2cpp) =====
 // HR_UI_RoomListLine: +0x50 password, +0x58 roomInfo -> rinfo_getName
 - (void)showRoomPasswords {
@@ -2262,114 +2108,65 @@ static void h_addMoney(void* self, int amount) {
     } @catch (...) { FLog(@"Sifre okuma hatasi"); }
 }
 
-// ===== YENI: ODADAKI TUM ARACLARI ZIPLAT =====
-- (void)launchAllCars {
-    @try {
-        void* rbs[64]; int n = few1n_collectCars(rbs, 64);
-        if (n <= 0) { FLog(@"Arac bulunamadi (yarista dene)"); return; }
-        int done = 0;
-        for (int i = 0; i < n; i++) {
-            void* rb = rbs[i]; if (!unityAlive(rb)) continue;
-            Vec3 v; rbGetVelIl(rb, &v); v.y = 48.0f; rbSetVelIl(rb, &v);
-            done++;
-        }
-        FLog([NSString stringWithFormat:@"Odadaki %d arac firlatildi!", done]);
-    } @catch (...) { FLog(@"Toplu firlatma hatasi"); }
-}
-
-// ===== YENI: TUM OYUNCULARI BANA CEK =====
-- (void)pullAllPlayers {
-    if (!unityAlive(g_rb)) { FLog(@"Once arabana bin"); return; }
-    @try {
-        Vec3 myPos; rbGetPosIl(g_rb, &myPos);
-        void* rbs[64]; int n = few1n_collectCars(rbs, 64);
-        if (n <= 0) { FLog(@"Arac yok (yarista dene)"); return; }
-        int done = 0;
-        for (int i = 0; i < n; i++) {
-            void* rb = rbs[i]; if (!unityAlive(rb)) continue;
-            float ang = (float)done * 1.3f;   // etrafima dairesel dagit
-            Vec3 t = { myPos.x + cosf(ang)*6.0f, myPos.y + 2.0f, myPos.z + sinf(ang)*6.0f };
-            rbSetPosIl(rb, &t);
-            Vec3 z = {0,0,0}; rbSetVelIl(rb, &z);
-            done++;
-        }
-        FLog([NSString stringWithFormat:@"%d oyuncu yanina cekildi!", done]);
-    } @catch (...) { FLog(@"Cekme hatasi"); }
-}
-
-// ===== HEDEF OYUNCU SEC (troll efektleri icin) =====
-- (void)selectTarget {
-    @try {
-        void* rbs[48]; int n = few1n_collectCars(rbs, 48);
-        if (n <= 0) { FLog([NSString stringWithFormat:@"Hedef yok. ham Rigidbody=%d rbTip=%@ (yarista dene)", g_rawRbCnt, g_rbTypeObj?@"VAR":@"YOK"]); return; }
-        Vec3 myPos = {0,0,0}; BOOL haveMe = unityAlive(g_rb); if (haveMe) rbGetPosIl(g_rb, &myPos);
-        NSMutableArray *rows = [NSMutableArray array];   // @[mesafe, rbPtr]
-        for (int i = 0; i < n; i++) {
-            void* rb = rbs[i]; if (!unityAlive(rb)) continue;
-            float dist = 0;
-            if (haveMe) { Vec3 p; rbGetPosIl(rb, &p); float dx=p.x-myPos.x,dy=p.y-myPos.y,dz=p.z-myPos.z; dist=sqrtf(dx*dx+dy*dy+dz*dz); }
-            [rows addObject:@[@(dist), @((uintptr_t)rb)]];
-        }
-        if (rows.count == 0) { FLog(@"Yakinda baska oyuncu yok"); return; }
-        [rows sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b){ return [a[0] compare:b[0]]; }];
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3AF Hedef Oyuncu Sec"
-                                                                   message:@"Sec, sonra Ucur/Dondur/Firlat uygula" preferredStyle:UIAlertControllerStyleAlert];
-        int idx = 1;
-        for (NSArray *r in rows) {
-            uintptr_t rv = (uintptr_t)[r[1] unsignedLongLongValue]; float dist = [r[0] floatValue];
-            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"\U0001F697 Arac %d  (%.0fm)", idx++, dist]
-                style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-                g_targetRb = (void*)rv; g_targetCar = (void*)rv;
-                FLog(@"Hedef secildi - artik Ucur/Dondur/Firlat calisir");
-                [self refreshUI];
-            }]];
-        }
-        [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
-        [self present:ac];
-    } @catch (...) { FLog(@"Hedef secme hatasi"); }
-}
-- (void)tapTargetFly    { isTargetFly = !isTargetFly; if(isTargetFly) isTargetFreeze=false; [self refreshUI]; }
-- (void)tapTargetFreeze { isTargetFreeze = !isTargetFreeze; if(isTargetFreeze) isTargetFly=false; [self refreshUI]; }
-- (void)launchTarget {
-    if (!unityAlive(g_targetRb)) { FLog(@"Once hedef sec"); return; }
-    @try { Vec3 v; rbGetVelIl(g_targetRb,&v); v.y=50.0f; rbSetVelIl(g_targetRb,&v); FLog(@"Hedef firlatildi"); } @catch (...) {}
-}
-- (void)pullTarget {
-    if (!unityAlive(g_targetRb)) { FLog(@"Once hedef sec"); return; }
-    if (!unityAlive(g_rb)) { FLog(@"Once arabana bin"); return; }
-    @try { Vec3 p; rbGetPosIl(g_rb,&p); p.x+=4.0f; p.y+=2.0f; rbSetPosIl(g_targetRb,&p); Vec3 z={0,0,0}; rbSetVelIl(g_targetRb,&z); FLog(@"Hedef yanina cekildi"); } @catch (...) {}
-}
-- (void)tapFreezeAll { isFreezeAll = !isFreezeAll; [self refreshUI]; FLog(isFreezeAll ? @"Tum oyuncular donduruluyor" : @"Dondurma kapali"); }
-- (void)tapPullHold  { isPullHold = !isPullHold; [self refreshUI]; FLog(isPullHold ? @"Herkes yaninda tutuluyor (surekli)" : @"Tutma kapali"); }
-
 - (void)teleportToPlayer {
     if (!unityAlive(g_rb)) { FLog(@"Once arabana bin"); return; }
     @try {
-        void* rbs[48]; int n = few1n_collectCars(rbs, 48);
-        if (n <= 0) { FLog(@"Baska arac yok (yarista dene)"); return; }
         Vec3 myPos = {0,0,0}; rbGetPosIl(g_rb, &myPos);
-        NSMutableArray *rows = [NSMutableArray array];   // @[mesafe, x,y,z]
-        for (int i = 0; i < n; i++) {
-            void* rb = rbs[i]; if (!unityAlive(rb)) continue;
-            Vec3 p; rbGetPosIl(rb, &p);
-            float dx=p.x-myPos.x, dy=p.y-myPos.y, dz=p.z-myPos.z;
-            float dist = sqrtf(dx*dx+dy*dy+dz*dz);
-            [rows addObject:@[@(dist), @(p.x), @(p.y), @(p.z)]];
+        NSMutableArray *rows = [NSMutableArray array];   // @[isim, mesafe, x,y,z]
+
+        // ONCELIK: PhotonView ile ISIMLI liste. Owner(Player*)@0x80 -> nickname.
+        // Field-read (metod cagirmaz) -> cokme YOK. IsMine@0x68 ile kendi araban elenir.
+        if (g_photonViewType && g_isMineOff > 0 && g_pvOwnerOff > 0 && g_mFindObjectsPlural && i_runtime_invoke) {
+            void* a[1]; a[0] = g_photonViewType;
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            if (ptrOk(arr)) {
+                int n = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+                if (n > 0 && n <= 512) {
+                    void** pvs = (void**)((uintptr_t)arr + 0x20);
+                    NSMutableArray *seen = [NSMutableArray array];   // owner pointer dedupe
+                    for (int i = 0; i < n; i++) {
+                        void* pv = pvs[i]; if (!unityAlive(pv)) continue;
+                        bool mine = *(bool*)((uintptr_t)pv + g_isMineOff);
+                        if (mine) continue;                                     // kendi arabam -> atla
+                        void* owner = *(void**)((uintptr_t)pv + g_pvOwnerOff);   // Player*
+                        if (!ptrOk(owner)) continue;                            // sahipsiz obje -> atla
+                        NSValue *ov = [NSValue valueWithPointer:owner];
+                        if ([seen containsObject:ov]) continue;                 // ayni oyuncu tekrari
+                        Vec3 p; if (!few1n_objPos(pv, &p)) continue;
+                        [seen addObject:ov];
+                        NSString *nm = (ply_getNickName) ? readStr(ply_getNickName(owner)) : nil;
+                        if (nm.length == 0) nm = @"(isimsiz)";
+                        float dx=p.x-myPos.x, dy=p.y-myPos.y, dz=p.z-myPos.z;
+                        [rows addObject:@[nm, @(sqrtf(dx*dx+dy*dy+dz*dz)), @(p.x), @(p.y), @(p.z)]];
+                    }
+                }
+            }
         }
-        if (rows.count == 0) { FLog(@"Yakinda baska oyuncu yok"); return; }
-        [rows sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b){ return [a[0] compare:b[0]]; }];
+        // YEDEK: PhotonView cozulemezse eski Rigidbody yontemi (isimsiz).
+        if (rows.count == 0) {
+            void* rbs[48]; int n = few1n_collectCars(rbs, 48);
+            for (int i = 0; i < n; i++) {
+                void* rb = rbs[i]; if (!unityAlive(rb)) continue;
+                Vec3 p; rbGetPosIl(rb, &p);
+                float dx=p.x-myPos.x, dy=p.y-myPos.y, dz=p.z-myPos.z;
+                [rows addObject:@[[NSString stringWithFormat:@"Arac %d", i+1], @(sqrtf(dx*dx+dy*dy+dz*dz)), @(p.x), @(p.y), @(p.z)]];
+            }
+        }
+
+        if (rows.count == 0) { FLog(@"Baska oyuncu yok (yarista dene)"); return; }
+        [rows sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b){ return [a[1] compare:b[1]]; }];
         UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F680 Oyuncuya Isinlan"
-                                                                   message:[NSString stringWithFormat:@"%lu arac - yanina isinlan", (unsigned long)rows.count] preferredStyle:UIAlertControllerStyleAlert];
-        int idx = 1;
+                                                                   message:[NSString stringWithFormat:@"%lu oyuncu - yanina isinlan", (unsigned long)rows.count] preferredStyle:UIAlertControllerStyleAlert];
         for (NSArray *r in rows) {
-            float x = [r[1] floatValue], yy = [r[2] floatValue], z = [r[3] floatValue], dist = [r[0] floatValue];
-            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"\U0001F697 Arac %d  (%.0fm)", idx++, dist]
+            NSString *nm = r[0];
+            float dist = [r[1] floatValue], x = [r[2] floatValue], yy = [r[3] floatValue], z = [r[4] floatValue];
+            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"\U0001F697 %@  (%.0fm)", nm, dist]
                 style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
                 if (!unityAlive(g_rb)) return;
                 Vec3 t = { x, yy + 2.0f, z - 4.0f };   // hafif ustunde ve arkasinda (icine girme)
                 rbSetPosIl(g_rb, &t);
                 Vec3 zero = {0,0,0}; rbSetVelIl(g_rb, &zero);
-                FLog([NSString stringWithFormat:@"Oyuncunun yanina isinlanildi (%.0fm)", dist]);
+                FLog([NSString stringWithFormat:@"%@ yanina isinlanildi (%.0fm)", nm, dist]);
             }]];
         }
         [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
@@ -2381,13 +2178,8 @@ static void h_addMoney(void* self, int amount) {
     enforceScale();
     few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
     few1n_forcePlate(); // ozel plaka acikken il2cpp ile zorla (hook olu)
-    // TROLL ONBELLEGI: freeze/pull acikken araclari topla (tick=0.3s), uygulama frameTick'te
-    if (isFreezeAll || isPullHold) g_trollN = few1n_collectCars(g_trollCars, 64);
-    else g_trollN = 0;
     // arac rengi acikken materyalleri BIR KEZ al (tekrar fetch instance sizdirir/coker)
-    if (isCarColorEnabled && unityAlive(g_carDrive) && g_carMatCount == 0) few1n_refreshCarMats();
-    // selektor acikken isik bilesenlerini BIR KEZ al
-    if (isSelektor && unityAlive(g_carDrive) && g_carLightCount == 0) few1n_refreshCarLights();
+    if (isCarColorEnabled && unityAlive(g_rb) && g_carMatCount == 0) few1n_refreshCarMats();
     // OTOMATIK TIP ARAMA: araba tipi yoksa periyodik yeniden coz.
     // Araba assembly'si sadece yarisa girince yuklenir -> aciliste bulunamayabilir.
     static int retryTick = 0, retryCount = 0;
@@ -2440,21 +2232,6 @@ static void h_addMoney(void* self, int amount) {
 - (void)tapNitro     { isInfiniteNitroEnabled  = !isInfiniteNitroEnabled;  saveBool(@"nitro", isInfiniteNitroEnabled);      [self refreshUI]; }
 - (void)tapNoClip    { isNoClip   = !isNoClip;   saveBool(@"noclip", isNoClip);     [self refreshUI]; }
 - (void)tapAntiGrav  { isAntiGrav = !isAntiGrav; saveBool(@"antigrav", isAntiGrav); [self refreshUI]; }
-- (void)tapDrift     { isDriftMode = !isDriftMode; saveBool(@"drift", isDriftMode); [self refreshUI]; }
-- (void)tapSelektor  { isSelektor = !isSelektor; saveBool(@"selektor", isSelektor); if(isSelektor) few1n_refreshCarLights(); [self refreshUI]; }
-- (void)tapSuperCar  { isSuperCar = !isSuperCar; saveBool(@"supercar", isSuperCar); [self refreshUI]; }
-- (void)editSuperMult {
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3CE Guc Carpani"
-        message:@"Motor/hiz/nitro kac kat? (2-15)" preferredStyle:UIAlertControllerStyleAlert];
-    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.keyboardType = UIKeyboardTypeDecimalPad; tf.text = [NSString stringWithFormat:@"%.0f", superMult]; }];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-        float v = [ac.textFields.firstObject.text floatValue];
-        if (v >= 1.0f && v <= 15.0f) { superMult = v; saveFloat(@"superMult", v); isSuperCar = true; saveBool(@"supercar", true); g_superSaved = false; }
-        [self refreshUI];
-    }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
-    [self present:ac];
-}
 - (void)tapCarSize   { isCarSizeEnabled = !isCarSizeEnabled; saveBool(@"carsize", isCarSizeEnabled); [self refreshUI]; }
 - (void)editCarSize {
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F4CF Arac Boyutu"
@@ -3552,12 +3329,8 @@ static void restoreSettings(void) {
     isSpeedHud             = false;   // HUD da kapali baslar
     isNoClip               = loadBool(@"noclip", false);
     isAntiGrav             = loadBool(@"antigrav", false);
-    isDriftMode            = loadBool(@"drift", false);
-    isSelektor             = false;   // selektor her aciliste kapali baslar
     isCarSizeEnabled       = false;   // boyut her aciliste kapali baslar
     carSizeVal             = loadFloat(@"carSize", 1.0f);
-    isSuperCar             = loadBool(@"supercar", false);
-    superMult              = loadFloat(@"superMult", 3.0f);
     isCarColorEnabled      = false;   // renk her aciliste kapali (materyal onbellegi bos)
     carColorRainbow        = loadBool(@"carrainbow", true);
     g_carColor             = (Color4){ loadFloat(@"carR",1.0f), loadFloat(@"carG",0.0f), loadFloat(@"carB",0.0f), 1.0f };
@@ -3674,7 +3447,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v29.2 basladi, UnityFramework araniyor...");
+    FLog(@"v29.5 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
