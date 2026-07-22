@@ -226,6 +226,7 @@ static int   g_selektorTick = 0;
 static void* g_rbTypeObj = NULL;       // typeof(UnityEngine.Rigidbody)
 static void* g_mCompGetTransform = NULL; // Component.get_transform
 static void* g_mTransGetPos = NULL;    // Transform.get_position -> Vector3
+static void* g_mGetCompInParent = NULL; // Component.GetComponentInParent(Type,bool)
 // ==== YENI HAVALI HACKLER ====
 static void* g_mRbSetDetect = NULL;    // Rigidbody.set_detectCollisions (no-clip)
 static void* g_mRbUseGrav = NULL;      // Rigidbody.set_useGravity (anti-grav)
@@ -255,6 +256,8 @@ static void* g_targetRb = NULL;    // hedef Rigidbody
 static bool  isTargetFly = false;  // hedefi surekli yukselt
 static bool  isTargetFreeze = false; // hedefi dondur
 static bool  isFreezeAll = false;  // odadaki herkesi dondur
+static bool  isPullHold = false;   // herkesi surekli yanimda tut (senkronu yener)
+static void* g_trollCars[64]; static int g_trollN = 0;   // troll onbellegi (tick'te doldurulur)
 // ==== SUPER ARAC (CarDriveSettings gelismis ayar) ====
 static bool  isSuperCar = false;
 static float superMult = 3.0f;         // guc carpani
@@ -426,6 +429,7 @@ static void few1n_initIl2cpp(void) {
             if (cmp) {
                 g_mCompGetTransform = i_class_get_method_from_name(cmp, "get_transform", 0);
                 g_mGetCompsChild    = i_class_get_method_from_name(cmp, "GetComponentsInChildren", 2); // (Type,bool)
+                g_mGetCompInParent  = i_class_get_method_from_name(cmp, "GetComponentInParent", 2);     // (Type,bool)
             }
         }
         if (!g_rendererType) {
@@ -899,9 +903,13 @@ static int few1n_collectCars(void** out, int maxN) {
         if (cnt < 0 || cnt > 4096) return 0;
         void** rbs = (void**)((uintptr_t)arr + 0x20);
         Vec3 pos[64]; int pn = 0;
+        Vec3 myPos = {0,0,0}; BOOL haveMe = unityAlive(g_rb); if (haveMe) rbGetPosIl(g_rb, &myPos);
         for (int i = 0; i < cnt && n < maxN; i++) {
             void* rb = rbs[i]; if (!unityAlive(rb) || rb == g_rb) continue;
             Vec3 p; rbGetPosIl(rb, &p);
+            // SENIN arabani DISLA: g_rb'ye 5m'den yakinsa (govde+teker) senin aracin -> atla.
+            // Boylece troll SANA degmez, kendini kontrol edebilirsin.
+            if (haveMe) { float dx=p.x-myPos.x,dy=p.y-myPos.y,dz=p.z-myPos.z; if (dx*dx+dy*dy+dz*dz < 25.0f) continue; }
             bool dup = false;   // 4m icindeki Rigidbody'ler ayni arac say (teker/govde)
             for (int k = 0; k < pn; k++) { float dx=p.x-pos[k].x,dy=p.y-pos[k].y,dz=p.z-pos[k].z; if (dx*dx+dy*dy+dz*dz < 16.0f) { dup=true; break; } }
             if (dup) continue;
@@ -965,29 +973,29 @@ static bool few1n_objPos(void* obj, Vec3* out) {
 }
 // YEDEK: CarDriveSystem bulunamazsa kameraya en yakin Rigidbody = oyuncunun araci.
 // Boylece zipla/isinlan/ucus g_rb'siz kalmaz (hiz/nitro yine CarDriveSystem ister).
+// SENIN arabani KESIN bul: CarDriveSystem'i OLAN Rigidbody = senin araban.
+// Uzak oyuncularin arabasinda CarDriveSystem YOK -> asla onlari almaz.
+// Boylece kontrol/hile HEP senin arabanda kalir.
 static void few1n_findRbFallback(void) {
-    if (!g_rbTypeObj || !g_mFindObjectsPlural || !g_mCamGetMain || !i_runtime_invoke) return;
+    if (!g_rbTypeObj || !g_mFindObjectsPlural || !g_mGetCompInParent || !g_carDriveTypeObj || !i_runtime_invoke) return;
     @try {
-        void* cam = i_runtime_invoke(g_mCamGetMain, NULL, NULL, NULL);
-        if (!ptrOk(cam)) return;
-        Vec3 camPos; if (!few1n_objPos(cam, &camPos)) return;
         void* a[1]; a[0] = g_rbTypeObj;
         void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
         if (!ptrOk(arr)) return;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-        if (cnt < 0 || cnt > 256) return;
+        if (cnt < 0 || cnt > 1024) return;
         void** rbs = (void**)((uintptr_t)arr + 0x20);
-        void* best = NULL; float bestD = 1e18f;
         for (int i = 0; i < cnt; i++) {
-            void* rb = rbs[i]; if (!ptrOk(rb)) continue;
-            Vec3 p; rbGetPosIl(rb, &p);
-            float dx=p.x-camPos.x, dy=p.y-camPos.y, dz=p.z-camPos.z;
-            float d = dx*dx+dy*dy+dz*dz;
-            if (d < bestD) { bestD = d; best = rb; }
+            void* rb = rbs[i]; if (!unityAlive(rb)) continue;
+            bool inc = true; void* pa[2]; pa[0] = g_carDriveTypeObj; pa[1] = &inc;
+            void* cd = i_runtime_invoke(g_mGetCompInParent, rb, pa, NULL);
+            if (unityAlive(cd)) {   // bu Rigidbody CarDriveSystem'e sahip = SENIN araban
+                g_rb = rb; g_carDrive = cd;
+                void* inp = *(void**)((uintptr_t)cd + 0x20);   // CarPlayerInput
+                if (unityAlive(inp)) { void* nos = *(void**)((uintptr_t)inp + 0x28); if (ptrOk(nos)) g_carNitro = nos; }
+                return;
+            }
         }
-        // MESAFE SINIRI: kameraya en yakin araba SENIN araban (chase cam ~5-10m).
-        // 18m'den uzaksa muhtemelen baska oyuncu -> alma (baskasini zplatmayi onler).
-        if (ptrOk(best) && bestD < 324.0f) g_rb = best;
     } @catch (...) {}
 }
 
@@ -1036,6 +1044,19 @@ static void few1n_findCar(void) {
         // Boylece CarPlayerInput/CarDriveSystem bulunamasa da zipla/ucus calisir,
         // ama 18m sinir sayesinde baska oyuncunun arabasini almaz.
         if (!unityAlive(g_rb) && (g_findTick % 3 == 0)) few1n_findRbFallback();
+        // g_rb VAR ama g_carDrive YOK ise: Rigidbody'nin GameObject'inden CarDriveSystem'i al.
+        // Boylece hiz/nitro/super arac/drift/selektor/boyut da calisir (hepsi g_carDrive ister).
+        if (unityAlive(g_rb) && !unityAlive(g_carDrive) && g_mGetCompInParent && g_carDriveTypeObj) {
+            @try {
+                bool inc = true; void* a[2]; a[0] = g_carDriveTypeObj; a[1] = &inc;
+                void* cd = i_runtime_invoke(g_mGetCompInParent, g_rb, a, NULL);
+                if (unityAlive(cd)) {
+                    g_carDrive = cd;
+                    void* inp = *(void**)((uintptr_t)cd + 0x20);   // jfs -> CarPlayerInput
+                    if (unityAlive(inp)) { void* nos = *(void**)((uintptr_t)inp + 0x28); if (ptrOk(nos)) g_carNitro = nos; }
+                }
+            } @catch (...) {}
+        }
     } @catch (...) {}
 }
 
@@ -1550,7 +1571,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v29.0  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v29.1  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -1624,6 +1645,7 @@ static void h_addMoney(void* self, int amount) {
     y = [self actionRow:@"\U0001F4A5  ODADAKI TUM ARACLARI ZIPLAT" color:C_RED atY:y action:@selector(launchAllCars)];
     y = [self actionRow:@"\U0001F9F2  Tum Oyunculari Bana Cek" color:C_RED atY:y action:@selector(pullAllPlayers)];
     y = [self toggle:@"\U0001F9CA  Tum Oyunculari Dondur" sub:@"Odadaki herkesi yerinde tut" key:@"freezeall" atY:y action:@selector(tapFreezeAll)];
+    y = [self toggle:@"\U0001F9F2  Herkesi Yanimda Tut" sub:@"Surekli yaninda tut (geri gitmez)" key:@"pullhold" atY:y action:@selector(tapPullHold)];
     y = [self header:@"\U0001F3AF  HEDEF OYUNCU (troll)" atY:y];
     y = [self actionRow:@"\U0001F3AF  Hedef Oyuncu Sec" color:C_GOLD atY:y action:@selector(selectTarget)];
     y = [self toggle:@"\U0001F6F8  Hedefi Ucur" sub:@"Secili oyuncuyu surekli yukselt" key:@"tgtfly" atY:y action:@selector(tapTargetFly)];
@@ -1893,6 +1915,7 @@ static void h_addMoney(void* self, int amount) {
     [self setToggle:@"tgtfly"    on:isTargetFly];
     [self setToggle:@"tgtfreeze" on:isTargetFreeze];
     [self setToggle:@"freezeall" on:isFreezeAll];
+    [self setToggle:@"pullhold"  on:isPullHold];
     [self setToggle:@"carcolor"  on:isCarColorEnabled];
     [self setToggle:@"carcolorrainbow" on:carColorRainbow];
     [self setToggle:@"lyrics"    on:isLyricsEnabled];
@@ -1942,6 +1965,21 @@ static void h_addMoney(void* self, int amount) {
                 v.y *= 0.25f;                     // dususu yavaslat (floaty)
             }
             rbSetVelIl(g_rb, &v);
+        } @catch (...) {}
+    }
+    // TUM OYUNCULAR: her frame uygula (ag senkronunu yener -> geri gitmez/durur)
+    if ((isFreezeAll || isPullHold) && g_trollN > 0) {
+        @try {
+            Vec3 myPos = {0,0,0}; BOOL haveMe = unityAlive(g_rb); if (haveMe) rbGetPosIl(g_rb, &myPos);
+            for (int i = 0; i < g_trollN; i++) {
+                void* rb = g_trollCars[i]; if (!unityAlive(rb)) continue;
+                if (isPullHold && haveMe) {
+                    float ang = (float)i * 1.3f;
+                    Vec3 t = { myPos.x + cosf(ang)*6.0f, myPos.y + 1.5f, myPos.z + sinf(ang)*6.0f };
+                    rbSetPosIl(rb, &t);
+                }
+                Vec3 z = {0,0,0}; rbSetVelIl(rb, &z);   // hem freeze hem pull'da hizi sifirla
+            }
         } @catch (...) {}
     }
     // HEDEF OYUNCU troll (secilen oyuncuya surekli efekt)
@@ -2256,6 +2294,7 @@ static void h_addMoney(void* self, int amount) {
     @try { Vec3 p; rbGetPosIl(g_rb,&p); p.x+=4.0f; p.y+=2.0f; rbSetPosIl(g_targetRb,&p); Vec3 z={0,0,0}; rbSetVelIl(g_targetRb,&z); FLog(@"Hedef yanina cekildi"); } @catch (...) {}
 }
 - (void)tapFreezeAll { isFreezeAll = !isFreezeAll; [self refreshUI]; FLog(isFreezeAll ? @"Tum oyuncular donduruluyor" : @"Dondurma kapali"); }
+- (void)tapPullHold  { isPullHold = !isPullHold; [self refreshUI]; FLog(isPullHold ? @"Herkes yaninda tutuluyor (surekli)" : @"Tutma kapali"); }
 
 - (void)teleportToPlayer {
     if (!unityAlive(g_rb)) { FLog(@"Once arabana bin"); return; }
@@ -2296,14 +2335,9 @@ static void h_addMoney(void* self, int amount) {
     enforceScale();
     few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
     few1n_forcePlate(); // ozel plaka acikken il2cpp ile zorla (hook olu)
-    // TUM OYUNCULARI DONDUR: her tick (~0.3s) herkesin hizini sifirla
-    if (isFreezeAll) {
-        @try {
-            void* rbs[64]; int n = few1n_collectCars(rbs, 64);
-            for (int i = 0; i < n; i++) { void* rb = rbs[i]; if (!unityAlive(rb)) continue;
-                Vec3 z = {0,0,0}; rbSetVelIl(rb, &z); }
-        } @catch (...) {}
-    }
+    // TROLL ONBELLEGI: freeze/pull acikken araclari topla (tick=0.3s), uygulama frameTick'te
+    if (isFreezeAll || isPullHold) g_trollN = few1n_collectCars(g_trollCars, 64);
+    else g_trollN = 0;
     // arac rengi acikken materyalleri BIR KEZ al (tekrar fetch instance sizdirir/coker)
     if (isCarColorEnabled && unityAlive(g_carDrive) && g_carMatCount == 0) few1n_refreshCarMats();
     // selektor acikken isik bilesenlerini BIR KEZ al
@@ -2436,6 +2470,7 @@ static void h_addMoney(void* self, int amount) {
         else if (spamStyle == 4) msg = rainbowWrap(base, rbIdx++);                                                    // gokkusagi
         else if (spamStyle == 5) msg = [NSString stringWithFormat:@"<size=150%%><color=#%@><b>%@</b></color></size>", col, base]; // buyuk+renk
         else if (spamStyle == 6) msg = [NSString stringWithFormat:@"<color=#%@>『 %@ 』</color>", col, base];          // cerceve+renk
+        else if (spamStyle == 7) msg = [NSString stringWithFormat:@"<size=200%%>%@</size>", base];                    // BUYUK yazi (renksiz)
         else                     msg = base;
         void* s = mkStr(msg);
         if (s) chatSend(mgr, s);
@@ -2443,10 +2478,10 @@ static void h_addMoney(void* self, int amount) {
 }
 
 - (void)pickSpamStyle:(UIButton*)b {
-    spamStyle = (spamStyle + 1) % 7;
+    spamStyle = (spamStyle + 1) % 8;
     saveInt(@"spamStyle", spamStyle);
-    NSArray *names = @[@"Duz", @"Cerceveli", @"Semboller", @"Renkli", @"Gokkusagi", @"Buyuk+Renk", @"Cerceve+Renk"];
-    [b setTitle:[NSString stringWithFormat:@"\U0001F3AD Spam Stili: %@", names[spamStyle % 7]] forState:UIControlStateNormal];
+    NSArray *names = @[@"Duz", @"Cerceveli", @"Semboller", @"Renkli", @"Gokkusagi", @"Buyuk+Renk", @"Cerceve+Renk", @"BUYUK"];
+    [b setTitle:[NSString stringWithFormat:@"\U0001F3AD Spam Stili: %@", names[spamStyle % 8]] forState:UIControlStateNormal];
 }
 - (void)pickSpamColor {
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3A8 Spam Rengi" message:@"Renkli stiller icin" preferredStyle:UIAlertControllerStyleActionSheet];
@@ -3593,7 +3628,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v29.0 basladi, UnityFramework araniyor...");
+    FLog(@"v29.1 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
