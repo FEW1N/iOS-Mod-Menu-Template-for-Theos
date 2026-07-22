@@ -881,6 +881,37 @@ static void* few1n_findAllCars(int* outCount) {
     } @catch (...) { return NULL; }
 }
 
+// TUM oyuncularin arac Rigidbody'lerini topla (UZAK oyuncular DAHIL - onlarda
+// CarDriveSystem yok ama Rigidbody var). Yakinlari (ayni aracin tekeri vs) birlestirir.
+// out[] doldurulur, return = sayi. Kendi araban (g_rb) haric.
+static int g_rawRbCnt = -1;   // teshis: son FindObjectsOfType(Rigidbody) ham sayisi
+static int few1n_collectCars(void** out, int maxN) {
+    int n = 0;
+    g_rawRbCnt = -1;
+    if (!g_rbTypeObj) { g_rawRbCnt = -2; return 0; }   // -2 = Rigidbody tipi cozulmedi
+    if (!g_mFindObjectsPlural || !i_runtime_invoke) { g_rawRbCnt = -3; return 0; }
+    @try {
+        void* a[1]; a[0] = g_rbTypeObj;
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) { g_rawRbCnt = -4; return 0; }   // -4 = FindObjectsOfType null dondu
+        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+        g_rawRbCnt = cnt;
+        if (cnt < 0 || cnt > 4096) return 0;
+        void** rbs = (void**)((uintptr_t)arr + 0x20);
+        Vec3 pos[64]; int pn = 0;
+        for (int i = 0; i < cnt && n < maxN; i++) {
+            void* rb = rbs[i]; if (!unityAlive(rb) || rb == g_rb) continue;
+            Vec3 p; rbGetPosIl(rb, &p);
+            bool dup = false;   // 4m icindeki Rigidbody'ler ayni arac say (teker/govde)
+            for (int k = 0; k < pn; k++) { float dx=p.x-pos[k].x,dy=p.y-pos[k].y,dz=p.z-pos[k].z; if (dx*dx+dy*dy+dz*dz < 16.0f) { dup=true; break; } }
+            if (dup) continue;
+            if (pn < 64) pos[pn++] = p;
+            out[n++] = rb;
+        }
+    } @catch (...) {}
+    return n;
+}
+
 // ===== ESP CIZIM VERISI + OZEL VIEW (kutu + cizgi + HUD) =====
 typedef struct { float sx, sy, dist, boxH; } EspItem;
 static EspItem g_espItems[128];
@@ -954,7 +985,9 @@ static void few1n_findRbFallback(void) {
             float d = dx*dx+dy*dy+dz*dz;
             if (d < bestD) { bestD = d; best = rb; }
         }
-        if (ptrOk(best)) g_rb = best;
+        // MESAFE SINIRI: kameraya en yakin araba SENIN araban (chase cam ~5-10m).
+        // 18m'den uzaksa muhtemelen baska oyuncu -> alma (baskasini zplatmayi onler).
+        if (ptrOk(best) && bestD < 324.0f) g_rb = best;
     } @catch (...) {}
 }
 
@@ -990,11 +1023,19 @@ static void few1n_findCar(void) {
                 if (ptrOk(nos)) g_carNitro = nos;
             }
         }
-        // ONEMLI: g_carDrive ve g_rb SADECE CarPlayerInput'tan gelir (kesin SENIN araban).
-        // Eski "en yakin araba" / FindObjectOfType(CarDriveSystem) yedekleri KALDIRILDI
-        // cunku baska odada BASKASININ arabasini yakalayip onu zplatiyordu.
-        // CarPlayerInput bulunamazsa (garaj) hile calismaz - bu DOGRU davranis.
-        (void)gotMine;
+        // IKINCIL: CarPlayerInput bulunamadiysa CarDriveSystem'i dene (g_carDrive icin)
+        if (!gotMine && ((!g_carDrive) || (g_findTick % 12 == 0)) && g_carDriveTypeObj) {
+            void* found = few1n_findByType(g_carDriveTypeObj);
+            if (ptrOk(found)) {
+                g_carDrive = found;
+                void* rb = *(void**)((uintptr_t)found + 0x48);
+                if (ptrOk(rb)) g_rb = rb;
+            }
+        }
+        // SON CARE: g_rb hala yoksa kameraya en yakin (MESAFE SINIRLI = SENIN araban) araci al.
+        // Boylece CarPlayerInput/CarDriveSystem bulunamasa da zipla/ucus calisir,
+        // ama 18m sinir sayesinde baska oyuncunun arabasini almaz.
+        if (!unityAlive(g_rb) && (g_findTick % 3 == 0)) few1n_findRbFallback();
     } @catch (...) {}
 }
 
@@ -1509,7 +1550,7 @@ static void h_addMoney(void* self, int amount) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v28.7  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v29.0  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -2073,16 +2114,12 @@ static void h_addMoney(void* self, int amount) {
 // NOT: sahibi olmadigin icin cogunlukla SENIN ekraninda gozukur (troll efekti).
 - (void)launchPlayer {
     @try {
-        int cnt = 0;
-        void* arr = few1n_findAllCars(&cnt);
-        if (!arr || cnt <= 0) { FLog(@"Baska arac yok"); return; }
-        void** cars = (void**)((uintptr_t)arr + 0x20);
+        void* rbs[48]; int n = few1n_collectCars(rbs, 48);
+        if (n <= 0) { FLog(@"Baska arac yok (yarista dene)"); return; }
         Vec3 myPos = {0,0,0}; BOOL haveMe = unityAlive(g_rb); if (haveMe) rbGetPosIl(g_rb, &myPos);
         NSMutableArray *rows = [NSMutableArray array];   // @[mesafe, rbPtrNum]
-        for (int i = 0; i < cnt; i++) {
-            void* car = cars[i]; if (!unityAlive(car)) continue;
-            void* rb = *(void**)((uintptr_t)car + 0x48);
-            if (!unityAlive(rb) || rb == g_rb) continue;
+        for (int i = 0; i < n; i++) {
+            void* rb = rbs[i]; if (!unityAlive(rb) || rb == g_rb) continue;
             float dist = 0;
             if (haveMe) { Vec3 p; rbGetPosIl(rb, &p); float dx=p.x-myPos.x,dy=p.y-myPos.y,dz=p.z-myPos.z; dist=sqrtf(dx*dx+dy*dy+dz*dz); }
             [rows addObject:@[@(dist), @((uintptr_t)rb)]];
@@ -2144,16 +2181,12 @@ static void h_addMoney(void* self, int amount) {
 // ===== YENI: ODADAKI TUM ARACLARI ZIPLAT =====
 - (void)launchAllCars {
     @try {
-        int cnt = 0;
-        void* arr = few1n_findAllCars(&cnt);
-        if (!arr || cnt <= 0) { FLog(@"Arac bulunamadi"); return; }
-        void** cars = (void**)((uintptr_t)arr + 0x20);
+        void* rbs[64]; int n = few1n_collectCars(rbs, 64);
+        if (n <= 0) { FLog(@"Arac bulunamadi (yarista dene)"); return; }
         int done = 0;
-        for (int i = 0; i < cnt; i++) {
-            void* car = cars[i]; if (!unityAlive(car)) continue;
-            void* rb = *(void**)((uintptr_t)car + 0x48);
-            if (!unityAlive(rb)) continue;
-            Vec3 v; rbGetVelIl(rb, &v); v.y = 48.0f; rbSetVelIl(rb, &v);   // herkesi firlat
+        for (int i = 0; i < n; i++) {
+            void* rb = rbs[i]; if (!unityAlive(rb)) continue;
+            Vec3 v; rbGetVelIl(rb, &v); v.y = 48.0f; rbSetVelIl(rb, &v);
             done++;
         }
         FLog([NSString stringWithFormat:@"Odadaki %d arac firlatildi!", done]);
@@ -2165,16 +2198,12 @@ static void h_addMoney(void* self, int amount) {
     if (!unityAlive(g_rb)) { FLog(@"Once arabana bin"); return; }
     @try {
         Vec3 myPos; rbGetPosIl(g_rb, &myPos);
-        int cnt = 0;
-        void* arr = few1n_findAllCars(&cnt);
-        if (!arr || cnt <= 0) { FLog(@"Arac yok"); return; }
-        void** cars = (void**)((uintptr_t)arr + 0x20);
+        void* rbs[64]; int n = few1n_collectCars(rbs, 64);
+        if (n <= 0) { FLog(@"Arac yok (yarista dene)"); return; }
         int done = 0;
-        for (int i = 0; i < cnt; i++) {
-            void* car = cars[i]; if (!unityAlive(car)) continue;
-            void* rb = *(void**)((uintptr_t)car + 0x48);
-            if (!unityAlive(rb) || rb == g_rb) continue;
-            float ang = (float)done * 1.3f;   // etrafima dairesel dagit (ust uste binmesin)
+        for (int i = 0; i < n; i++) {
+            void* rb = rbs[i]; if (!unityAlive(rb)) continue;
+            float ang = (float)done * 1.3f;   // etrafima dairesel dagit
             Vec3 t = { myPos.x + cosf(ang)*6.0f, myPos.y + 2.0f, myPos.z + sinf(ang)*6.0f };
             rbSetPosIl(rb, &t);
             Vec3 z = {0,0,0}; rbSetVelIl(rb, &z);
@@ -2187,19 +2216,15 @@ static void h_addMoney(void* self, int amount) {
 // ===== HEDEF OYUNCU SEC (troll efektleri icin) =====
 - (void)selectTarget {
     @try {
-        int cnt = 0;
-        void* arr = few1n_findAllCars(&cnt);
-        if (!arr || cnt <= 0) { FLog(@"Baska arac yok"); return; }
-        void** cars = (void**)((uintptr_t)arr + 0x20);
+        void* rbs[48]; int n = few1n_collectCars(rbs, 48);
+        if (n <= 0) { FLog([NSString stringWithFormat:@"Hedef yok. ham Rigidbody=%d rbTip=%@ (yarista dene)", g_rawRbCnt, g_rbTypeObj?@"VAR":@"YOK"]); return; }
         Vec3 myPos = {0,0,0}; BOOL haveMe = unityAlive(g_rb); if (haveMe) rbGetPosIl(g_rb, &myPos);
-        NSMutableArray *rows = [NSMutableArray array];   // @[mesafe, carPtr, rbPtr]
-        for (int i = 0; i < cnt; i++) {
-            void* car = cars[i]; if (!unityAlive(car)) continue;
-            void* rb = *(void**)((uintptr_t)car + 0x48);
-            if (!unityAlive(rb) || rb == g_rb) continue;
+        NSMutableArray *rows = [NSMutableArray array];   // @[mesafe, rbPtr]
+        for (int i = 0; i < n; i++) {
+            void* rb = rbs[i]; if (!unityAlive(rb)) continue;
             float dist = 0;
             if (haveMe) { Vec3 p; rbGetPosIl(rb, &p); float dx=p.x-myPos.x,dy=p.y-myPos.y,dz=p.z-myPos.z; dist=sqrtf(dx*dx+dy*dy+dz*dz); }
-            [rows addObject:@[@(dist), @((uintptr_t)car), @((uintptr_t)rb)]];
+            [rows addObject:@[@(dist), @((uintptr_t)rb)]];
         }
         if (rows.count == 0) { FLog(@"Yakinda baska oyuncu yok"); return; }
         [rows sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b){ return [a[0] compare:b[0]]; }];
@@ -2207,10 +2232,10 @@ static void h_addMoney(void* self, int amount) {
                                                                    message:@"Sec, sonra Ucur/Dondur/Firlat uygula" preferredStyle:UIAlertControllerStyleAlert];
         int idx = 1;
         for (NSArray *r in rows) {
-            uintptr_t cv = (uintptr_t)[r[1] unsignedLongLongValue], rv = (uintptr_t)[r[2] unsignedLongLongValue]; float dist = [r[0] floatValue];
+            uintptr_t rv = (uintptr_t)[r[1] unsignedLongLongValue]; float dist = [r[0] floatValue];
             [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"\U0001F697 Arac %d  (%.0fm)", idx++, dist]
                 style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-                g_targetCar = (void*)cv; g_targetRb = (void*)rv;
+                g_targetRb = (void*)rv; g_targetCar = (void*)rv;
                 FLog(@"Hedef secildi - artik Ucur/Dondur/Firlat calisir");
                 [self refreshUI];
             }]];
@@ -2235,16 +2260,12 @@ static void h_addMoney(void* self, int amount) {
 - (void)teleportToPlayer {
     if (!unityAlive(g_rb)) { FLog(@"Once arabana bin"); return; }
     @try {
-        int cnt = 0;
-        void* arr = few1n_findAllCars(&cnt);
-        if (!arr || cnt <= 0) { FLog(@"Baska arac yok"); return; }
-        void** cars = (void**)((uintptr_t)arr + 0x20);
+        void* rbs[48]; int n = few1n_collectCars(rbs, 48);
+        if (n <= 0) { FLog(@"Baska arac yok (yarista dene)"); return; }
         Vec3 myPos = {0,0,0}; rbGetPosIl(g_rb, &myPos);
         NSMutableArray *rows = [NSMutableArray array];   // @[mesafe, x,y,z]
-        for (int i = 0; i < cnt; i++) {
-            void* car = cars[i]; if (!unityAlive(car)) continue;
-            void* rb = *(void**)((uintptr_t)car + 0x48);
-            if (!unityAlive(rb) || rb == g_rb) continue;
+        for (int i = 0; i < n; i++) {
+            void* rb = rbs[i]; if (!unityAlive(rb)) continue;
             Vec3 p; rbGetPosIl(rb, &p);
             float dx=p.x-myPos.x, dy=p.y-myPos.y, dz=p.z-myPos.z;
             float dist = sqrtf(dx*dx+dy*dy+dz*dz);
@@ -2278,11 +2299,9 @@ static void h_addMoney(void* self, int amount) {
     // TUM OYUNCULARI DONDUR: her tick (~0.3s) herkesin hizini sifirla
     if (isFreezeAll) {
         @try {
-            int cnt = 0; void* arr = few1n_findAllCars(&cnt);
-            if (arr && cnt > 0) { void** cars = (void**)((uintptr_t)arr + 0x20);
-                for (int i = 0; i < cnt; i++) { void* car = cars[i]; if (!unityAlive(car)) continue;
-                    void* rb = *(void**)((uintptr_t)car + 0x48); if (!unityAlive(rb) || rb == g_rb) continue;
-                    Vec3 z = {0,0,0}; rbSetVelIl(rb, &z); } }
+            void* rbs[64]; int n = few1n_collectCars(rbs, 64);
+            for (int i = 0; i < n; i++) { void* rb = rbs[i]; if (!unityAlive(rb)) continue;
+                Vec3 z = {0,0,0}; rbSetVelIl(rb, &z); }
         } @catch (...) {}
     }
     // arac rengi acikken materyalleri BIR KEZ al (tekrar fetch instance sizdirir/coker)
@@ -3574,7 +3593,7 @@ static void few1n_poll(void) {
 }
 
 %ctor {
-    FLog(@"v28.7 basladi, UnityFramework araniyor...");
+    FLog(@"v29.0 basladi, UnityFramework araniyor...");
     restoreSettings();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ few1n_poll(); });
 }
